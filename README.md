@@ -1,5 +1,7 @@
 # Personal DSH plugins
 
+[中文说明](README.zh.md)
+
 This repository contains personal DSH plugins that can be maintained in one place and installed from source on both a home computer and a work computer.
 
 The repository currently provides:
