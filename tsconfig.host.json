@@ -1,0 +1,7 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/credentials/authorization-web" },
+    { "path": "packages/client/ui-authorization" }
+  ]
+}

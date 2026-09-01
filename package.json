@@ -1,0 +1,21 @@
+{
+  "name": "dsh-personal-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal DSH plugins maintained in a public GitHub repository.",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "install:profile": "node scripts/install-profile.mjs",
+    "check": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

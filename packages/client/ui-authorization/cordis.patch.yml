@@ -1,0 +1,8 @@
+# The ui-authorization bundle: one row mounting the browser sign-in surface.
+# The client plugin registers the login button into the Models page's
+# `settings.models.provider-card` slot (keyed by the `llm-pi-ai` settings
+# namespace) and $mounts the `authorization` remote namespace from
+# `@deepseek-ai/dsh-authorization-web`.
+- insert:
+    - id: client-ui-authorization
+      name: '@deepseek-ai/dsh-client-ui-authorization'
