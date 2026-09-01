@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "workspaces": [
-    "packages/*"
+    "packages/*/*"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",

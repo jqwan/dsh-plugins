@@ -67,7 +67,7 @@ Restart the DSH process after updating a profile. The profile keeps the package 
 
 Put each new plugin under `packages/<group>/<name>/`. Give it a `package.json`, a `cordis.patch.yml` when it is installed as a DSH bundle, a source entry, and a package-local build entry in `scripts/build.mjs`. Keep runtime service identities as peer dependencies of the DSH version that provides them; do not bundle a second copy of Cordis or DSH services.
 
-Changes to browser code require `pnpm run build` before `install:profile`. Changes to Host Remote methods also require refreshed Typert artifacts under `packages/credentials/authorization-web/generated/`; those files are the wire contract consumed by the browser.
+Changes to browser code require `pnpm run build` before `install:profile`. Changes to Host Remote methods also require refreshed Typert artifacts under `packages/credentials/authorization-web/generated/`; after building the matching DSH checkout, refresh them with `node scripts/update-generated.mjs /path/to/deepseek-harness`. Those files are the wire contract consumed by the browser.
 
 ## Local checks
 

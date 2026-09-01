@@ -63,7 +63,7 @@ pnpm run install:profile -- --profile web
 
 新增插件放在 `packages/<group>/<name>/`，并提供自己的 `package.json`、源码入口和 `cordis.patch.yml`（如果插件通过 DSH bundle 安装）。同时在 `scripts/build.mjs` 中加入该插件的构建入口。
 
-修改浏览器代码后必须重新执行 `pnpm run build`。如果修改 Host Remote 方法，还必须刷新 `packages/credentials/authorization-web/generated/` 中的 Typert 生成物，因为这些文件是浏览器使用的 wire contract。
+修改浏览器代码后必须重新执行 `pnpm run build`。如果修改 Host Remote 方法，还必须刷新 `packages/credentials/authorization-web/generated/` 中的 Typert 生成物：先构建匹配版本的 DSH checkout，再执行 `node scripts/update-generated.mjs /path/to/deepseek-harness`。这些文件是浏览器使用的 wire contract。
 
 ## 本地检查
 
