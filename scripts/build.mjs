@@ -130,7 +130,7 @@ async function buildClient() {
     legalComments: 'none',
   })
   const body = await readFile(inner, 'utf8')
-  await writeFile(join(directory, 'lib/client.js'), `window.__ModuleLoader__.load({\n  id: '@deepseek-ai/dsh-client-ui-authorization',\n  factory: (require) => {\n${body}\n    return module.exports\n  },\n})\n`)
+  await writeFile(join(directory, 'lib/client.js'), `window.__ModuleLoader__.load({\n  id: '@deepseek-ai/dsh-client-ui-authorization',\n  factory: (require) => {\n    var module = { exports: {} }\n    var exports = module.exports\n${body}\n    return module.exports\n  },\n})\n`)
   await rm(inner, { force: true })
 }
 
