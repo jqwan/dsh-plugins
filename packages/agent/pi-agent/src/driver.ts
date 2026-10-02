@@ -156,6 +156,23 @@ export class PiDriver {
     }
   }
 
+  /** Request pi-side context compaction (RPC `compact`). */
+  async compact(): Promise<boolean> {
+    const proc = this.process
+    if (proc === undefined || proc.isExited) return false
+    const response = await proc.command({ type: 'compact', id: this.nextId() }, 120_000)
+    return response.success
+  }
+
+  /** Read pi's slash-command list (built-ins + extensions + skills). */
+  async getCommands(): Promise<Array<{ name: string; description?: string; source: string }>> {
+    const proc = await this.ensureProcess()
+    const response = await proc.command({ type: 'get_commands', id: this.nextId() }, 10_000)
+    if (!response.success) return []
+    const data = response.data as { commands?: Array<{ name: string; description?: string; source: string }> } | undefined
+    return Array.isArray(data?.commands) ? data.commands : []
+  }
+
   /** Queue steering input into the live run (pi `steer` command). */
   async steer(text: string): Promise<void> {
     const proc = this.process

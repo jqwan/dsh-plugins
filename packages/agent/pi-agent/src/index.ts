@@ -39,6 +39,7 @@ import {
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import { PiAgent, type PiAgentOptions } from './pi-agent.ts'
 import { PiCatalogAdapter } from './llm-adapter.ts'
 import { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
@@ -142,7 +143,7 @@ interface PreparedAgent {
 }
 
 export class PiAgentLoop extends Service implements AgentFactory {
-  static inject = ['agents', 'sessions', 'llm', 'sessionProjections']
+  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands']
 
   /** Runtime schema for declarative agents. */
   static Config = z.object({
@@ -187,11 +188,15 @@ export class PiAgentLoop extends Service implements AgentFactory {
     this.runtime = { ctx }
     ctx.effect(() => () => { this.accepting = false }, 'piAgent.teardown()')
     ctx.effect(() => ctx.agents.setFactory(this), 'piAgent.setFactory()')
+    const cliEntry = resolvePiCliEntry(config.piCliEntry)
     // Catalog-only adapter: the native model picker lists pi's models.
     // registerAdapter requires at least one route, so registration waits for
     // the offline catalog read (fast, no network).
-    const adapter = new PiCatalogAdapter(() => this.catalogValue)
-    const cliEntry = resolvePiCliEntry(config.piCliEntry)
+    const adapter = new PiCatalogAdapter({
+      catalog: () => this.catalogValue,
+      piCliEntry: cliEntry,
+      logger: { warn: message => { this.ctx.logger.warn(message) } },
+    })
     if (cliEntry !== undefined) {
       void piCatalog(cliEntry).then(catalog => {
         if (!this.isActive()) return
@@ -429,7 +434,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     })())
 
     ownerCtx.effect(function* () {
-      machine = new PiAgent(loopCtx, id, options, session)
+      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands)
       machineReady.resolve()
       yield machine.scope.rawDispose
     }, `piAgent.lifecycle(${id})`)

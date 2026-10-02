@@ -28,6 +28,7 @@ import type { ContentBlock, LlmCallConfig, TokenUsage, ToolCallId, UserMessage }
 import {
   createAssistantMessage,
   createToolResultMessage,
+  createUserMessage,
   errorChain,
 } from '@deepseek-ai/dsh-llm'
 import type { Scope } from '@deepseek-ai/dsh-scope'
@@ -35,6 +36,8 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Session, SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
+import type { CommandInvocation, CommandRuntime, CommandResult } from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-commands'
 import { PiInbox } from './inbox.ts'
 import { PiDriver, type DriverTurnOutcome } from './driver.ts'
 
@@ -187,12 +190,15 @@ export class PiAgent implements Agent {
   private readonly callSeqs = new Map<string, SessionSeq>()
   /** Stops the model/selection watcher at disposal. */
   private stopSelectionWatch: (() => void) | undefined
+  /** Whether pi's slash commands have been mirrored into the agent scope. */
+  private commandsLoaded = false
 
   constructor(
     private readonly loopCtx: Context,
     public readonly id: SessionId,
     public readonly options: PiAgentOptions,
     public readonly session: Session,
+    private readonly commands: CommandRuntime,
   ) {
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
@@ -370,6 +376,9 @@ export class PiAgent implements Agent {
         const text = claimed.map(userMessageText).filter(part => part !== '').join('\n\n')
         await this.driver.start()
         this.appendRequestAnchor()
+        void this.loadPiCommands().catch((error: unknown) => {
+          this.loopCtx.logger.warn(`pi[${this.id}] command registry unavailable: ${errorChain(error)}`)
+        })
         const outcome = await this.driver.prompt(text)
         reason = outcome.kind === 'aborted'
           ? { kind: 'aborted', reason: abortedCancelCause(signal) ?? { kind: 'user' } }
@@ -489,6 +498,59 @@ export class PiAgent implements Agent {
       }
       default:
         return
+    }
+  }
+
+  /**
+   * Mirror pi's slash commands as agent-scoped dsh commands. Scoped same-name
+   * registration shadows the global dsh command for this session. A command
+   * entered while idle opens its own turn (pi consumes slash lines before the
+   * model); while running it goes in as steering input.
+   */
+  private async loadPiCommands(): Promise<void> {
+    if (this.commandsLoaded) return
+    this.commandsLoaded = true
+    const commands = await this.driver.getCommands()
+    for (const command of commands) {
+      if (!/^[a-z][a-z0-9_-]*$/.test(command.name)) continue
+      try {
+        this.commands.register({
+          name: command.name,
+          description: command.description ?? `(pi ${command.source} command)`,
+          handler: (invocation: CommandInvocation): CommandResult => {
+            const text = `/${command.name}${invocation.rawInput}`
+            if (this.status === 'running') {
+              void this.driver.steer(text)
+              return { kind: 'success', text: 'sent to pi as steering input' }
+            }
+            this.followup(createUserMessage({
+              content: [{ type: 'text' as const, text }],
+              source: { kind: 'user' },
+            }))
+            return { kind: 'success' }
+          },
+        })
+      } catch (error: unknown) {
+        this.loopCtx.logger.warn(`pi[${this.id}] command "${command.name}" registration failed: ${errorChain(error)}`)
+      }
+    }
+    // Shadow dsh's /compact: the stock command drives ctx.compaction over
+    // the LLM runtime, which the pi kernel does not use (the catalog adapter's
+    // stream() fails by design). Route compaction to pi instead.
+    try { (await import('node:fs')).appendFileSync('/tmp/pi-agent-debug.log', 'registering compact shadow\\n') } catch {}
+    this.commands.register({
+      name: 'compact',
+      description: 'Compact the conversation context (pi kernel)',
+      handler: async (): Promise<CommandResult> => {
+        const started = await this.driver.compact()
+        return started
+          ? { kind: 'success', text: 'pi compaction requested' }
+          : { kind: 'error', text: 'pi is not running yet — send a message first' }
+      },
+    })
+    try { (await import('node:fs')).appendFileSync('/tmp/pi-agent-debug.log', 'compact shadow registered\\n') } catch {}
+    if (commands.length > 0) {
+      this.loopCtx.logger.info(`pi[${this.id}] registered ${commands.length} pi commands + compact shadow`)
     }
   }
 
