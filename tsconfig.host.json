@@ -4,6 +4,7 @@
     { "path": "packages/credentials/authorization-web" },
     { "path": "packages/client/ui-authorization" },
     { "path": "packages/task/workbench-web" },
-    { "path": "packages/client/ui-workbench" }
+    { "path": "packages/client/ui-workbench" },
+    { "path": "packages/agent/pi-agent" }
   ]
 }

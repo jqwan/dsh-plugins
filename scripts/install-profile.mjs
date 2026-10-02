@@ -26,6 +26,7 @@ function run(command, args, allowFailure = false) {
 const packages = {
   workbenchWeb: resolve(root, 'packages/task/workbench-web'),
   clientUiWorkbench: resolve(root, 'packages/client/ui-workbench'),
+  piAgent: resolve(root, 'packages/agent/pi-agent'),
 }
 
 await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-client-ui-authorization'], true)
@@ -34,4 +35,5 @@ await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-clie
 await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-workbench-web'], true)
 await run(dsh, ['plugin', '--profile', profile, 'add', packages.workbenchWeb])
 await run(dsh, ['plugin', '--profile', profile, 'add', packages.clientUiWorkbench])
-console.log(`Installed workbench plugins into profile ${profile}.`)
+await run(dsh, ['plugin', '--profile', profile, 'add', packages.piAgent])
+console.log(`Installed workbench + pi-agent plugins into profile ${profile}.`)

@@ -22,6 +22,23 @@ const packages = {
     invariant: 'src/invariant.ts',
     externals: ['express', 'ws', 'node-pty'],
   },
+  'pi-agent': {
+    directory: 'packages/agent/pi-agent',
+    source: 'src/index.ts',
+    invariant: 'src/invariant.ts',
+    // dsh 运行时包一律 external：宿主进程里必须与 harness 同实例（双实例即类型撕裂）。
+    externals: [
+      '@deepseek-ai/schemastery',
+      '@deepseek-ai/dsh-agent',
+      '@deepseek-ai/dsh-brand',
+      '@deepseek-ai/dsh-llm',
+      '@deepseek-ai/dsh-scope',
+      '@deepseek-ai/dsh-session',
+      '@deepseek-ai/dsh-session-persistence',
+      '@deepseek-ai/dsh-session-projection',
+      '@deepseek-ai/dsh-util-values',
+    ],
+  },
   'client-ui-workbench': {
     directory: 'packages/client/ui-workbench',
     source: 'src/index.ts',
@@ -34,9 +51,9 @@ const packages = {
   },
 }
 
-function run(command, args, cwd = root) {
+function run(command, args, cwd = root, extraEnv = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit' })
+    const child = spawn(command, args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } })
     child.on('error', reject)
     child.on('exit', code => code === 0 ? resolvePromise() : reject(new Error(`${command} exited with ${String(code)}`)))
   })
@@ -78,7 +95,7 @@ function cssModulePlugin(prefix = 'dshAuth') {
 async function emitDeclarations(name, config) {
   const directory = resolve(root, config.directory)
   await rm(join(directory, 'lib/types'), { recursive: true, force: true })
-  await run('pnpm', ['exec', 'tsc', '-p', 'tsconfig.json', '--pretty', 'false'], directory)
+  await run('pnpm', ['exec', 'tsc', '-p', 'tsconfig.json', '--pretty', 'false'], directory, { NODE_OPTIONS: '--max-old-space-size=12288' })
   if (name === 'authorization-web') {
     for (const file of ['typert.host.js', 'typert.host.d.ts', 'typert.remote-client.js', 'typert.remote-client.d.ts']) {
       await cp(join(directory, 'generated', file), join(directory, 'lib', file))

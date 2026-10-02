@@ -1,0 +1,17 @@
+# pi 内核插件：用 pi coding agent（RPC 模式）替换 dsh 默认 agent 内核。
+# 禁用默认 agent-loop 行（patch 按 id 寻址、后写者胜），插入本插件行。
+# UI、工具呈现、会话历史、修改可视化等宿主能力保持原生不动。
+- id: agent-loop
+  disabled: true
+# 原生模型选择器的默认路由指向 pi 目录里的模型（provider id 与 pi 一致）。
+- id: agent-default-model
+  config:
+    provider: deepseek
+    model: deepseek-flash
+- insert:
+    - id: pi-agent
+      name: '@deepseek-ai/dsh-pi-agent'
+      config:
+        defaultProvider: deepseek
+        defaultModel: deepseek-flash
+        # 可选：dataDir / piCliEntry / defaultThinkingLevel
