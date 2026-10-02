@@ -1,0 +1,201 @@
+{
+  "version": "0.2.0-rc.2",
+  "commit": "639ed015397290b3745d163aafe02ffee4aa3f84",
+  "files": [
+    {
+      "source": "packages/client/ui-chat/src/client/chat/MessageItem.module.css",
+      "file": "dsh-chat/MessageItem.module.css",
+      "sha256": "e52ee9df23a65396983f2f22b3186a1e6fd72e4ba4fd0f48d5bee746205870f1"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/MessageIconActions.module.css",
+      "file": "dsh-chat/MessageIconActions.module.css",
+      "sha256": "b5e3ced5112bb676345eaa7d1bf7ec291b87f56ffa87579b6ece7b6ca6c72902"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/ReasoningRow.module.css",
+      "file": "dsh-chat/ReasoningRow.module.css",
+      "sha256": "5e37ddf4b6786f99c00cb15a7af9d5d23c7d12b0971f3314e3e6712090b2e879"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnProcessNodeView.module.css",
+      "file": "dsh-chat/TurnProcessNodeView.module.css",
+      "sha256": "2fb00c2a24da7f9946dac118eaa076bd55133ca972d159c8b72d7ffee1ba2292"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/ChatView.module.css",
+      "file": "dsh-chat/ChatView.module.css",
+      "sha256": "7a655d91324f4f5386e075290909f9f52afb15ce0b9087ffea5b5dfe19f5e837"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/message-chrome.ts",
+      "file": "dsh-chat/message-chrome.ts",
+      "sha256": "861a573c299317e5359f735a1c33381f93537e286a1b4fbd6ad0a0c01c98629a"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/use-calendar-day.ts",
+      "file": "dsh-chat/use-calendar-day.ts",
+      "sha256": "7add01dcf998cb7b00b85c9f71679f33954c84210beeadb28d371e22410a63f7"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/MessageIconActions.tsx",
+      "file": "dsh-chat/MessageIconActions.tsx",
+      "sha256": "83381472c200f696d924dd2c61076396e6f6a79747d06756c65af818d0a39912"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/skeleton/InputBar.module.css",
+      "file": "dsh-chat/InputBar.module.css",
+      "sha256": "d4adc760b7037ca717b61058c0b25ffce9eba9f8271f7f2b755008e2a103ffea"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css",
+      "file": "dsh-chat/ConversationRoot.module.css",
+      "sha256": "2999e40a7d99a5efc14066b0c93c90f860b481f26e55f1fb97a3c9fc3fadbd5f"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/queue/QueueDock.module.css",
+      "file": "dsh-chat/QueueDock.module.css",
+      "sha256": "eb9ec9684578b474e73ac7e5ff9beaefe13f78d24489669389f83afdc8724968"
+    },
+    {
+      "source": "packages/client/ui-model-selection/src/client/ModelSelect.tsx",
+      "file": "dsh-chat/ModelSelect.tsx",
+      "sha256": "63bf3616d81463590b5bc30f111fa47cdd665f1894d7fa741f168692929b2bad"
+    },
+    {
+      "source": "packages/client/ui-model-selection/src/client/ModelSelect.module.css",
+      "file": "dsh-chat/ModelSelect.module.css",
+      "sha256": "d73ecc9e347bb6bc5e826f09b87940ccf6c89e9bef37b1ddf17114fe8a3d362b"
+    },
+    {
+      "source": "packages/client/ui-model-selection/src/client/locales.ts",
+      "file": "dsh-chat/model-locales.ts",
+      "sha256": "d013eeee85bceca3549690533a158c978a5e54c53d308cfb01737626bcbe6cb5"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.tsx",
+      "file": "dsh-chat/TurnNavigator.tsx",
+      "sha256": "b6cde340ae8d7ec8dad9989fd0b1a443e7b004fd765a0e947482bc3b1fcdb6ef"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.module.css",
+      "file": "dsh-chat/TurnNavigator.module.css",
+      "sha256": "114ad82f41d9676dfd39ee6c8f9c239fcbbe343f9555dc9fbaea4814d9b8acdc"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css",
+      "sha256": "61aacd99c0a325ae32ecf7335769978cc030675e9a221e31720576f4f1df9f4c",
+      "file": "dsh-chat/HeroShell.module.css"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/skeleton/ContextMeter.module.css",
+      "sha256": "e797489423a959481600296afb54578ce8b9c7b5106be752b0e177628ef98bff",
+      "file": "dsh-chat/ContextMeter.module.css"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryToolbar.module.css",
+      "sha256": "b512e1c52f397ef81775295ae779e95dbf7682d53ce7a9b48e2f1f01dd714c8c",
+      "file": "dsh-trajectory/TrajectoryToolbar.module.css"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryTable.module.css",
+      "sha256": "31a1b6e3a1b6c051f21b66ede6f33c86b576d9d3d94e3f30526aff285865a28d",
+      "file": "dsh-trajectory/TrajectoryTable.module.css"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryTable.tsx",
+      "file": "dsh-trajectory/TrajectoryTable.tsx",
+      "sha256": "11e7973f44da2cc1871779d4979ba454d99e3c65b2a49c84decb070146413697"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryTimeline.module.css",
+      "file": "dsh-trajectory/TrajectoryTimeline.module.css",
+      "sha256": "3dde8e6e549a674b2b82c1750cfd67ae1cba61ffd4387d0e1a7e5a104164a39a"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryTimeline.tsx",
+      "file": "dsh-trajectory/TrajectoryTimeline.tsx",
+      "sha256": "c062d06535a38498051346095bb713a292f45085e7de817a9400a92292c4eedc"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/TrajectoryToolbar.tsx",
+      "file": "dsh-trajectory/TrajectoryToolbar.tsx",
+      "sha256": "6b65ae4bbdc3a92c907241332a72288b73b34663a656809e2050829a597e11cd"
+    },
+    {
+      "source": "packages/client/locale/src/locales/zh.ts",
+      "file": "dsh-trajectory/common-locales.ts",
+      "sha256": "df60768badc3c483478f5a57e48aee8219bd48f51764876a1d722432140d0e26"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/copy-codes.ts",
+      "file": "dsh-trajectory/copy-codes.ts",
+      "sha256": "58852ce7e6f76cdb0384a134e2d78b459b161c30aa47c83f800c5ee18ee3f540"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/locales.ts",
+      "file": "dsh-trajectory/locales.ts",
+      "sha256": "0a1ec4866ccb9f3b348ba9736cd1a7ab24041069fb6cfc634894985d1f2956ad"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/timeline.ts",
+      "file": "dsh-trajectory/timeline.ts",
+      "sha256": "ed2ebfd8b4233022115d9757d50d3af6cf399690ccc4fcf36f9f3edcf8e7b173"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/trajectory-preview.ts",
+      "file": "dsh-trajectory/trajectory-preview.ts",
+      "sha256": "e367a2fff648bb4383df672f3606d0b85bfd5f69efeee80541ead791785c0342"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/trajectory-record.ts",
+      "file": "dsh-trajectory/trajectory-record.ts",
+      "sha256": "d93866307a50db16309151ba567fbaf3271ad5579ad09b4390decfa06b4eb823"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/trajectory-virtual-rows.ts",
+      "file": "dsh-trajectory/trajectory-virtual-rows.ts",
+      "sha256": "cce8c7e0a630bf53f4324c88a811c0df8b44930972f42db457d0be4efa9f84d1"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/views.module.css",
+      "file": "dsh-trajectory/views.module.css",
+      "sha256": "b498de854c000b5de1e413b69911e8dfa50dc6897158f0d9f1b7ab65a6aab4b3"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnUsagePanel.tsx",
+      "file": "dsh-chat/TurnUsagePanel.tsx",
+      "sha256": "6f6aa7e0fbafcc89bef7a6b88c401394d583aa5776b1129581de14566ce879e9"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnUsagePanel.module.css",
+      "file": "dsh-chat/TurnUsagePanel.module.css",
+      "sha256": "04bf7fd6d5e3a243225d66faf731774555a0c36a393415ae4f0479528f2f7fd4"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/token-format.ts",
+      "file": "dsh-chat/token-format.ts",
+      "sha256": "a47dc1dfd586cca908e82cac3031ac8c40f16ca65428aae1395be810b1112c9a"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/locale.ts",
+      "file": "dsh-chat/chat-locales.ts",
+      "sha256": "e1d167534e968965bcad6ea2969e043c97074c0c28c0a44218a4f513fe0b6110"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/stat-dialog.ts",
+      "file": "dsh-chat/stat-dialog.ts",
+      "sha256": "b2ed41cce24be8522dea0508ebdab109da2f1fe98f69a830a52f886304b66ada"
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/stat-dialog.module.css",
+      "file": "dsh-chat/stat-dialog.module.css",
+      "sha256": "5dd6d59fceff90b5f8ec4066f14982a161cb492532eabe538823665f9315715d"
+    },
+    {
+      "source": "packages/client/ui-trajectory/src/client/code-program.ts",
+      "file": "dsh-trajectory/code-program.ts",
+      "sha256": "a31b4253ba9c7c2490f942768d060c769ff1b5b4fb653ccf67ab54af1e1593b7"
+    }
+  ]
+}
