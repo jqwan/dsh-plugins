@@ -8,8 +8,10 @@ The repository currently provides:
 
 - `@deepseek-ai/dsh-authorization-web`: the Host authorization bridge.
 - `@deepseek-ai/dsh-client-ui-authorization`: the Web Models-page sign-in UI.
+- `@deepseek-ai/dsh-workbench-web`: the π workbench (tasks, notes, pi TUI sessions, and dsh sessions) served under the `/workbench` prefix. See `docs/workbench-plugin.md`.
+- `@deepseek-ai/dsh-client-ui-workbench`: the native workbench fusion for the dsh web UI — it replaces dsh's sidebar with the workbench session tree (π/dsh toggle) and overlays dsh's center area with switchable workbench surfaces (pi terminal, task/note/session boards, stats, recycle bin); dsh sessions keep the native chat UI.
 
-The packages are kept in one source repository, but each package retains its own DSH bundle manifest. The installer builds both packages and adds them to a selected DSH profile in Host-then-Client order.
+The packages are kept in one source repository, but each package retains its own DSH bundle manifest. The installer builds the packages and adds them to a selected DSH profile in Host-then-Client order.
 
 ## Requirements
 
@@ -32,7 +34,9 @@ pnpm run build
 pnpm run install:profile -- --profile web
 ```
 
-`pnpm run install:profile` removes the two previous local entries from the selected profile and installs the freshly built packages. It does not modify the DSH installation or the shipped Web profile bundle.
+Stop any running `dsh web` instance first — reinstalling plugins while the live patch reload watches the profile can crash it.
+
+`pnpm run install:profile` removes the previous local entries from the selected profile and installs the freshly built packages (absolute paths, so any `DSH_BIN` wrapper works). It does not modify the DSH installation or the shipped Web profile bundle.
 
 Start the profile after installation:
 
@@ -90,3 +94,7 @@ pnpm run install:profile -- --profile web
 ```
 
 Pinning a tag or commit makes home and work installations reproducible. Public GitHub access exposes the source and build scripts; never put credentials in this repository.
+
+Pi chat drafts select a task and create a session only on first submission. The native trajectory and turn-stat panels show recorded messages, tool schemas, usage, and event timing; new pi calls record measurements without changing model context. See [workbench behavior](docs/workbench-plugin.md).
+
+The five management views share one Workbench entry with top tabs. Task scheduling includes host-timezone next-run previews and validation.

@@ -1,3 +1,7 @@
 node_modules/
+.pnpm-store/
 **/lib/
 .DS_Store
+packages/task/workbench-web/data/
+packages/task/workbench-web/sessions/
+packages/task/sessions/

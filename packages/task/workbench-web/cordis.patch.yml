@@ -1,0 +1,10 @@
+# The workbench-web bundle: one row mounting the π workbench runtime.
+# The runtime registers the /workbench HTTP prefix (REST + SSE + static assets)
+# and the /workbench/ws TUI WebSocket upgrade on ctx.webServer.
+- insert:
+    - id: workbench-web
+      name: '@deepseek-ai/dsh-workbench-web'
+      # 可选配置（省略 config 行即用默认值 $DSH_HOME/data/workbench）：
+      # config:
+      #   dataDir: /absolute/path/to/workbench-data
+      #   piCliEntry: /absolute/path/to/@earendil-works/pi-coding-agent/cli.js

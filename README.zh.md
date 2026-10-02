@@ -8,6 +8,8 @@
 
 - `@deepseek-ai/dsh-authorization-web`：Host 端授权桥接插件。
 - `@deepseek-ai/dsh-client-ui-authorization`：Models 页面 Provider 登录按钮和授权对话框。
+- `@deepseek-ai/dsh-workbench-web`：π 工作台（任务、便签、pi TUI 会话与 dsh 会话），挂载在 `/workbench` 前缀下，详见 `docs/workbench-plugin.md`。
+- `@deepseek-ai/dsh-client-ui-workbench`：工作台与 dsh web 的原生融合——以更低 priority 接管 dsh 侧边栏（π/dsh 会话切换的任务/会话树），并在中心区域叠加可切换的工作台界面（pi 终端、任务/便签/会话看板、统计、回收站）；dsh 会话保持原生聊天界面。
 
 ## 前置条件
 
@@ -85,3 +87,7 @@ pnpm run install:profile -- --profile web
 ```
 
 这个仓库是公共仓库，不要提交 API key、Cookie、公司凭据或其他敏感信息。
+
+Pi 聊天首屏支持选择任务，首次发送时才创建会话；原生轨迹和回合统计面板显示已记录的消息、工具参数定义、用量与事件耗时；新的 pi 调用会补录测量数据，不改变模型上下文。能力范围见 [工作台说明](docs/workbench-plugin.md)。
+
+任务、便签、会话、回收站和统计已合并到工作台顶部标签；定时设置支持按服务端时区预览下次运行并校验。

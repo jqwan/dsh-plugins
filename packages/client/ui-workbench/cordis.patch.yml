@@ -1,0 +1,6 @@
+# The ui-workbench bundle: one row mounting the browser workbench entry.
+# The client plugin registers the sidebar footer action and the full-screen
+# iframe overlay pointing at the workbench-web plugin's /workbench prefix.
+- insert:
+    - id: client-ui-workbench
+      name: '@deepseek-ai/dsh-client-ui-workbench'
