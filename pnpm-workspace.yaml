@@ -36,3 +36,4 @@ overrides:
   '@deepseek-ai/dsh-session-projection': 'link:../deepseek-harness/packages/session/session-projection'
   '@deepseek-ai/schemastery': 'link:../deepseek-harness/vendor/schemastery'
   '@deepseek-ai/dsh-commands': 'link:../deepseek-harness/packages/interaction/commands'
+  '@deepseek-ai/dsh-user-approval': 'link:../deepseek-harness/packages/interaction/user-approval'

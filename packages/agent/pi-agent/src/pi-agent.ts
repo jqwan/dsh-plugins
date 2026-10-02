@@ -18,6 +18,7 @@ import type {
   Agent,
   AgentCancelCause,
   AgentEventDispatch,
+  AssistantStreamFrame,
   AgentOptions,
   AgentStatus,
   CancelOptions,
@@ -25,6 +26,7 @@ import type {
 } from '@deepseek-ai/dsh-agent'
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, LlmCallConfig, TokenUsage, ToolCallId, UserMessage } from '@deepseek-ai/dsh-llm'
+import { LlmAttemptId } from '@deepseek-ai/dsh-llm'
 import {
   createAssistantMessage,
   createToolResultMessage,
@@ -37,6 +39,7 @@ import type { Session, SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandRuntime, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-commands'
 import { PiInbox } from './inbox.ts'
 import { PiDriver, type DriverTurnOutcome } from './driver.ts'
@@ -192,6 +195,10 @@ export class PiAgent implements Agent {
   private stopSelectionWatch: (() => void) | undefined
   /** Whether pi's slash commands have been mirrored into the agent scope. */
   private commandsLoaded = false
+  /** Live streaming attempt handed to the native chat UI. */
+  private stream: { attemptId: AssistantStreamFrame["attemptId"]; revision: number; index: number; openBlocks: Set<number>; ended: boolean } | undefined
+  private streamRevision = 0
+  private attemptCounter = 0
 
   constructor(
     private readonly loopCtx: Context,
@@ -199,6 +206,7 @@ export class PiAgent implements Agent {
     public readonly options: PiAgentOptions,
     public readonly session: Session,
     private readonly commands: CommandRuntime,
+    private readonly approval: ApprovalService,
   ) {
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
@@ -215,6 +223,21 @@ export class PiAgent implements Agent {
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
       onFrame: frame => this.translateFrame(frame),
+      onInteractiveExtUi: async request => {
+        // pi extension confirm → native approval card. Only valid inside an
+        // open turn (the audit pair needs one); idle asks auto-cancel.
+        if (request.method !== 'confirm') return undefined
+        if (this.phase.kind !== 'running') return undefined
+        const outcome = await this.approval.request({
+          agent: this,
+          toolName: 'pi-extension',
+          reason: request.title ?? 'pi extension asks for confirmation',
+          signal: this.phase.abort.signal,
+        })
+        if (outcome === 'allowed-once') return { confirmed: true }
+        if (outcome === 'rejected') return { confirmed: false }
+        return undefined
+      },
       logger: {
         info: message => loopCtx.logger.info(`pi[${id}] ${message}`),
         warn: message => loopCtx.logger.warn(`pi[${id}] ${message}`),
@@ -445,6 +468,64 @@ export class PiAgent implements Agent {
         }
         return
       }
+      case 'message_start': {
+        const message = frame.message as Record<string, unknown> | undefined
+        if (message === undefined || message.role !== 'assistant') return
+        // Open a streaming attempt for the native chat UI.
+        this.streamRevision += 1
+        this.stream = {
+          attemptId: LlmAttemptId(`${this.id}-a${this.attemptCounter += 1}`),
+          revision: this.streamRevision,
+          index: 0,
+          openBlocks: new Set<number>(),
+          ended: false,
+        }
+        this.dispatch.emit('agent/assistant-stream', {
+          frame: {
+            type: 'start',
+            attemptId: this.stream.attemptId,
+            revision: this.stream.revision,
+            turn,
+            step: this.runStep,
+          },
+        })
+        return
+      }
+      case 'message_update': {
+        const update = (frame as { assistantMessageEvent?: { type?: string; contentIndex?: number; delta?: string } }).assistantMessageEvent
+        if (update === undefined || this.stream === undefined || this.stream.ended) return
+        const index = typeof update.contentIndex === 'number' ? update.contentIndex : 0
+        if ((update.type === 'text_delta' || update.type === 'thinking_delta') && typeof update.delta === 'string' && update.delta !== '') {
+          if (!this.stream.openBlocks.has(index)) {
+            this.stream.openBlocks.add(index)
+            this.dispatch.emit('agent/assistant-stream', {
+              frame: {
+                type: 'chunk',
+                attemptId: this.stream.attemptId,
+                revision: this.stream.revision,
+                index: this.stream.index,
+                time: Date.now(),
+                chunk: { type: 'block-start', index, blockType: update.type === 'text_delta' ? 'text' : 'reasoning' },
+              },
+            })
+            this.stream.index += 1
+          }
+          this.dispatch.emit('agent/assistant-stream', {
+            frame: {
+              type: 'chunk',
+              attemptId: this.stream.attemptId,
+              revision: this.stream.revision,
+              index: this.stream.index,
+              time: Date.now(),
+              chunk: update.type === 'text_delta'
+                ? { type: 'text-delta', index, text: update.delta }
+                : { type: 'reasoning-delta', index, text: update.delta },
+            },
+          })
+          this.stream.index += 1
+        }
+        return
+      }
       case 'message_end': {
         const message = frame.message as Record<string, unknown> | undefined
         if (message === undefined || message.role !== 'assistant') return
@@ -456,7 +537,7 @@ export class PiAgent implements Agent {
             model: typeof message.model === 'string' ? message.model : 'default',
           },
         })
-        this.session.append('assistant/message', {
+        const committed = this.session.append('assistant/message', {
           turn,
           step: this.runStep,
           message: piMessage,
@@ -464,6 +545,21 @@ export class PiAgent implements Agent {
           stream: [],
           ...(message.stopReason === 'aborted' ? { interrupted: true } : {}),
         }, { surfaceOp: 'append' })
+        // Settle the streaming attempt against the durable event.
+        const stream = this.stream
+        if (stream !== undefined && !stream.ended) {
+          stream.ended = true
+          this.dispatch.emit('agent/assistant-stream', {
+            frame: {
+              type: 'end',
+              attemptId: stream.attemptId,
+              revision: stream.revision,
+              index: stream.index,
+              outcome: { kind: 'committed', eventType: 'assistant/message', seq: committed.seq },
+            },
+          })
+        }
+        this.stream = undefined
         return
       }
       case 'tool_execution_start': {

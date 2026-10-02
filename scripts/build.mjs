@@ -31,6 +31,7 @@ const packages = {
       '@deepseek-ai/schemastery',
       '@deepseek-ai/dsh-agent',
       '@deepseek-ai/dsh-commands',
+      '@deepseek-ai/dsh-user-approval',
       '@deepseek-ai/dsh-brand',
       '@deepseek-ai/dsh-llm',
       '@deepseek-ai/dsh-scope',

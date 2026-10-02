@@ -50,6 +50,13 @@ export interface PiDriverOptions {
   thinkingLevel?: string
   /** Frame consumer, invoked synchronously in arrival order. */
   onFrame: (frame: RpcFrame) => void
+  /**
+   * Interactive extension UI bridge (confirm only in v1): return the
+   * response payload, or undefined to auto-cancel. Non-interactive pushes
+   * (setStatus/setWidget/…) never reach this.
+   */
+  onInteractiveExtUi?: (request: { method: string; title?: string; message?: string }) =>
+    Promise<{ confirmed?: boolean; value?: string } | undefined>
   /** Diagnostics sink. */
   logger: { info: (message: string) => void; warn: (message: string) => void }
 }
@@ -270,10 +277,25 @@ export class PiDriver {
     if (frame.type === 'extension_ui_request') {
       const method = typeof frame.method === 'string' ? frame.method : undefined
       const id = typeof frame.id === 'string' ? frame.id : undefined
-      if (id !== undefined && method !== undefined && ['select', 'confirm', 'input', 'editor'].includes(method)) {
-        void this.process?.write({ type: 'extension_ui_response', id, cancelled: true })
-        this.options.logger.warn(`pi extension_ui_request cancelled (v1): ${method}`)
+      if (id === undefined || method === undefined) return
+      if (method === 'confirm' && this.options.onInteractiveExtUi !== undefined) {
+        void this.options.onInteractiveExtUi({
+          method,
+          ...(typeof frame.title === 'string' ? { title: frame.title } : {}),
+          ...(typeof frame.message === 'string' ? { message: frame.message } : {}),
+        }).then(response => {
+          if (response === undefined) {
+            void this.process?.write({ type: 'extension_ui_response', id, cancelled: true })
+            return
+          }
+          void this.process?.write({ type: 'extension_ui_response', id, ...response })
+        }).catch(() => {
+          void this.process?.write({ type: 'extension_ui_response', id, cancelled: true })
+        })
+        return
       }
+      void this.process?.write({ type: 'extension_ui_response', id, cancelled: true })
+      this.options.logger.warn(`pi extension_ui_request cancelled (no bridge): ${method}`)
       return
     }
     if (frame.type === 'message_end' || frame.type === 'turn_end') {

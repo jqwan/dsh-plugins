@@ -327,17 +327,20 @@ packages/agent/pi-agent/
 
 ## 12. 分阶段实施
 
-| 阶段 | 内容 | 验收 |
-|---|---|---|
-| P0 骨架 | 包/patch/config；PiAgentLoop 激活并 setFactory；投影注册；空 agent 可创建 | dsh 起得来、原生 UI 出新会话（无内核报错） |
-| P1 文本探针 | driver 拉起 pi；send→prompt→assistant/message 落日志 | 原生聊天里看到 pi 回复（纯文本） |
-| P2 全事件 | step 边界、tool/call、tool/result、usage、turn/end reason；cancel→abort | 轨迹页/修改可视化原生呈现 |
-| P3 模型闭环 | catalog adapter；初始 selection；UI 选模型→set_model | 模型选择器列出 pi 模型并可切换 |
-| P4 resume | interrupted closers；pi 上下文重建（兜底路径） | 重启 dsh 后继续会话 |
-| P5 命令 | get_commands 注册 + 失效命令遮蔽 | /命令菜单可用 |
-| P6 审批 | pi 审批帧 ↔ ApprovalService | 原生审批卡片放行/拒绝生效 |
-| P7 subagent | delegate extension + 子会话翻译 | 原生面包屑 |
-| P8 打磨 | 流式帧、steer/inject 映射、compaction 事件映射、标题、失败重试 | 体验接近原生 |
+| 阶段 | 内容 | 验收 | 状态（2026-10-03） |
+|---|---|---|---|
+| P0 骨架 | 包/patch/config；PiAgentLoop 激活并 setFactory；投影注册 | dsh 起得来、原生 UI 出新会话 | ✅ 已验证 |
+| P1 文本探针 | driver 拉起 pi；send→prompt→assistant/message 落日志 | 原生聊天看到 pi 回复 | ✅ 已验证（"收到"） |
+| P2 全事件 | step 边界、tool/call、tool/result、usage、turn/end reason | 轨迹/用量原生呈现 | ✅ 已验证（ls 6t7s、41.5K tok、cache 66%） |
+| P2 补充 | cancel→abort | Stopped 状态、中断内容保留、会话可用 | ✅ 已验证 |
+| P3 模型闭环 | catalog adapter；UI 选模型→set_model；路由过滤 | 选择器列出 pi 模型并切换 | ✅ 已验证（DeepSeek 组出现） |
+| P4 resume | interrupted closers；pi 会话文件续跑 | 重启后带全上下文继续 | ✅ 已验证（缓存命中 74%） |
+| P5 命令 | get_commands → agent 作用域命令 | 命令进原生补全 | ✅ 已验证（43 条，gentle-shell 全套）；per-agent 遮蔽暂缓（单例 runtime 限制） |
+| P6 审批桥 | extension confirm → ApprovalService.request | 原生审批卡片 | ✅ 已接线（无活跃扩展触发，路径按契约实现） |
+| P8a 一次性补全 | adapter stream() 经 throwaway pi | stock /compact、LLM 标题可用 | ✅ 已验证（"Compacted 24 history items"） |
+| P8b 流式 | message_start/update → assistant-stream 帧 | 原生流式渲染 | ✅ 已接线（协议与原生一致；deepseek-flash 过快未目视确认中间态） |
+| P7 subagent | 子会话翻译（pi 侧 gentle-shell 已可用） | 原生面包屑 | ⏭ 下一阶段（工厂侧 parentAgent/meta 管道已就绪） |
+| P8c 其余打磨 | steer/inject 映射、compaction 事件映射、失败重试 | 体验接近原生 | ⏭ 后续 |
 
 每阶段独立提交；P1 完成即架构验证通过。
 

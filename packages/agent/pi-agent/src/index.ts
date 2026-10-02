@@ -40,6 +40,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
+import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import { PiAgent, type PiAgentOptions } from './pi-agent.ts'
 import { PiCatalogAdapter } from './llm-adapter.ts'
 import { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
@@ -143,7 +144,7 @@ interface PreparedAgent {
 }
 
 export class PiAgentLoop extends Service implements AgentFactory {
-  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands']
+  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval']
 
   /** Runtime schema for declarative agents. */
   static Config = z.object({
@@ -434,7 +435,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     })())
 
     ownerCtx.effect(function* () {
-      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands)
+      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands, loopCtx.get('approval') as ApprovalService)
       machineReady.resolve()
       yield machine.scope.rawDispose
     }, `piAgent.lifecycle(${id})`)
