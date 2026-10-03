@@ -309,8 +309,14 @@ export class PiAgentLoop extends Service implements AgentFactory {
     try {
       disposeFactory = ctx.agents.setFactory(this)
     } catch (error: unknown) {
+      // Stand-down: someone else owns the slot — in practice the native
+      // loop booted from a stale handoff marker. The marker's job is only
+      // to keep a kernel bootable while the row is OFF; with the row ON it
+      // would otherwise pin the native kernel across every restart. Drop it
+      // so the next boot returns to pi (the running native stays until then).
+      console.error(`[pi-agent] claim failed: ${errorChain(error)} — clearing any stale handoff marker`)
       this.ctx.logger.warn('pi-agent: factory slot is taken — pi kernel unavailable this session')
-      console.error(`[pi-agent] claim failed: ${errorChain(error)}`)
+      void this.clearHandoffMarker()
       return
     }
     this.factoryDisposer = disposeFactory
