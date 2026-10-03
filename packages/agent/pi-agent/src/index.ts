@@ -283,12 +283,25 @@ export class PiAgentLoop extends Service implements AgentFactory {
       void piCatalog(cliEntry).then(catalog => {
         if (!this.isActive()) return
         this.catalogValue = catalog
+        // The model picker follows the kernel: while pi drives, only pi's
+        // list is shown. Native routes for ids the pi catalog also carries
+        // must leave the registry before this registration (DUPLICATE_ADAPTER
+        // otherwise), and the remaining native routes are stashed so the
+        // picker shows exactly the list the active kernel can drive.
+        this.stashNativeAdapters(adapter, [...catalog.providers])
         this.adapterHandle = ctx.llm.registerAdapter(catalog.providers, adapter)
+        this.stashRemainingNativeAdapters(adapter)
       }).catch((error: unknown) => {
         this.ctx.logger.warn(`pi catalog unavailable: ${errorChain(error)}`)
       })
     }
-    ctx.effect(() => () => { this.adapterHandle?.() }, 'piAgent.adapter()')
+    ctx.effect(() => () => {
+      this.adapterHandle?.()
+      this.adapterHandle = undefined
+      // Kernel handoff: put the native model list back before the native
+      // kernel takes over.
+      this.restoreNativeAdapters()
+    }, 'piAgent.adapter()')
   }
 
   private isActive(): boolean {
@@ -297,6 +310,81 @@ export class PiAgentLoop extends Service implements AgentFactory {
 
   /** Disposer of the factory registration, set once the kernel effect claims the slot. */
   private factoryDisposer: (() => void) | undefined
+
+  /**
+   * Native adapter registry entries lifted out of `ctx.llm` while pi drives,
+   * restored verbatim at kernel handoff. The llm runtime exposes no public
+   * way to withdraw another plugin's registration, so this walks its private
+   * adapter map; every access is shape-guarded and degrades to the merged
+   * picker list if a dsh upgrade changes the internals.
+   */
+  private nativeAdapterStash: Array<[string, unknown]> = []
+
+  /** Loosely-typed view of the llm runtime's private registry internals. */
+  private llmInternals(): {
+    adapters?: Map<string, unknown>
+    emitAdaptersUpdated?: () => void
+  } | undefined {
+    const runtime = this.runtime.ctx.llm as unknown as {
+      adapters?: Map<string, unknown>
+      emitAdaptersUpdated?: () => void
+    }
+    return runtime?.adapters instanceof Map ? runtime : undefined
+  }
+
+  private emitAdaptersUpdated(): void {
+    const runtime = this.llmInternals()
+    try {
+      runtime?.emitAdaptersUpdated?.()
+    } catch (error: unknown) {
+      console.error(`[pi-agent] llm/adapters-updated emit failed: ${errorChain(error)}`)
+    }
+  }
+
+  /**
+   * Lift native registry entries for the given provider ids out of the map
+   * (making room for this adapter's registration of the same ids), keeping
+   * them for {@link restoreNativeAdapters}.
+   */
+  private stashNativeAdapters(adapter: PiCatalogAdapter, providers: string[]): void {
+    const runtime = this.llmInternals()
+    if (runtime?.adapters === undefined) return
+    for (const provider of providers) {
+      const entry = runtime.adapters.get(provider)
+      if (entry === undefined) continue
+      this.nativeAdapterStash.push([provider, entry])
+      runtime.adapters.delete(provider)
+    }
+    void adapter
+  }
+
+  /** Lift every entry not owned by this adapter (the residual native list). */
+  private stashRemainingNativeAdapters(adapter: PiCatalogAdapter): void {
+    const runtime = this.llmInternals()
+    if (runtime?.adapters === undefined) return
+    for (const [provider, entry] of [...runtime.adapters]) {
+      if ((entry as { adapter?: unknown }).adapter === adapter) continue
+      this.nativeAdapterStash.push([provider, entry])
+      runtime.adapters.delete(provider)
+    }
+    this.emitAdaptersUpdated()
+  }
+
+  /** Put the stashed native entries back (ids my disposal just freed). */
+  private restoreNativeAdapters(): void {
+    if (this.nativeAdapterStash.length === 0) return
+    const runtime = this.llmInternals()
+    if (runtime?.adapters === undefined) {
+      this.nativeAdapterStash = []
+      return
+    }
+    for (const [provider, entry] of this.nativeAdapterStash) {
+      if (!runtime.adapters.has(provider)) runtime.adapters.set(provider, entry)
+    }
+    this.nativeAdapterStash = []
+    this.emitAdaptersUpdated()
+    console.error('[pi-agent] native model list restored (kernel handoff)')
+  }
 
   /**
    * Claim the factory slot and everything kernel-owned that follows from it
