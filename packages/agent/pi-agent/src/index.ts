@@ -13,8 +13,8 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
@@ -31,7 +31,6 @@ import type {
   TurnBoundaryProjection,
 } from '@deepseek-ai/dsh-agent'
 import { errorChain, type AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
-import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import {
   interruptedTurnClosers,
   SessionLogOffset,
@@ -41,6 +40,7 @@ import {
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-tools'
+import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
@@ -149,6 +149,27 @@ interface PreparedAgent {
   dispose(): Promise<void>
 }
 
+/**
+ * Per-process kernel handoff stash, keyed by the root context. When the
+ * pi-agent plugin is disabled (Plugins-page row toggle), its teardown loads
+ * the REAL AgentLoop plugin on the ROOT scope — a genuine cordis fiber, so
+ * service resolution and agent lifecycles work exactly like the stock kernel
+ * — and stashes that fiber's disposer here. Re-enabling the plugin runs the
+ * disposer first (freeing the slot and sweeping native-era agents through the
+ * loop's own FactoryOwnership), then claims the slot back.
+ */
+const nativeHandoffs = new Map<Context, () => void>()
+
+/**
+ * Profile-patch marker written when the pi kernel hands the factory slot to
+ * the native agent-loop at runtime (Plugins-page row toggle). The bundle
+ * patch hard-disables agent-loop, so a restart with the pi row disabled
+ * would boot NO kernel at all; the marker re-enables agent-loop for the
+ * next boot. Cleared when the pi kernel constructs again (row re-enabled),
+ * restoring the bundle patch's disable.
+ */
+const HANDOFF_MARKER = '# pi-agent handoff: keep the native agent-loop bootable while pi is off'
+
 export class PiAgentLoop extends Service implements AgentFactory {
   static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval', 'tools']
 
@@ -177,7 +198,6 @@ export class PiAgentLoop extends Service implements AgentFactory {
   private accepting = true
   private catalogValue: PiCatalog | undefined
   private adapterHandle: AdapterRegistrationHandle | undefined
-  private nativeKernelPresent = false
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'piAgent')
@@ -190,70 +210,78 @@ export class PiAgentLoop extends Service implements AgentFactory {
       agents: config.agents ?? [],
     }
     this.runtime = { ctx }
-    // Kernel coexistence: the factory slot is single; when the native
-    // agent-loop row is enabled (the /kernel switch turned it on) it reliably
-    // wins the race (base bundle rows activate first), and this service
-    // stands down — keeping only the /kernel command so the switch can be
-    // flipped back from within the app. Everything kernel-owned (factory,
-    // projections, declarative agents) is claimed inside one effect whose
-    // outcome decides the rest of startup.
+    // Kernel coexistence: the native AgentLoop kernel is built lazily (see
+    // buildNativeKernel) and takes the factory slot when this plugin is
+    // disabled from the Plugins page; re-enabling claims the slot back. The
+    // dsh log is shared, so sessions continue across switches.
     ctx.effect(() => {
-      let disposeFactory: (() => void) | undefined
-      try {
-        disposeFactory = ctx.agents.setFactory(this)
-      } catch (error: unknown) {
-        this.nativeKernelPresent = true
-        this.ctx.logger.info('pi-agent: native agent-loop owns the factory — standing down (dsh kernel active)')
-        return () => {}
-      }
-      // Won the slot: this factory owns the projections too (the native UI
-      // reads them; the disabled default loop no longer registers them).
-      ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
-      ctx.sessionProjections.register(inboxProjectionDefinition)
-      for (const { id, sessionId, resumeSessionId, ...options } of this.config.agents) {
-        if (resumeSessionId === undefined || resumeSessionId === '') {
-          const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
-          void this.createConfigured(ctx, configuredId, options).catch(
-            (error: unknown) => this.reportStartupFailure(id, 'create', configuredId, error),
-          )
-          continue
-        }
-        ctx.effect(() => {
-          const persistence = this.runtime.ctx.get('sessionPersistence')
-          if (persistence === undefined) {
-            this.reportStartupFailure(id, 'resume', resumeSessionId, new Error('no session persistence backend'))
-            return () => {}
-          }
-          void this.resumeWith(ctx, persistence, { resumeSessionId, agentOptions: options }).catch(
-            (error: unknown) => this.reportStartupFailure(id, 'resume', resumeSessionId, error),
-          )
-          return () => {}
-        }, `piAgent.resume(${id})`)
+      console.error('[pi-agent] kernel active (factory owned)')
+      // Reclaim the slot if a previous pi teardown handed it to the native
+      // kernel (plugin toggled off and back on within one process). The
+      // native plugin fiber disposes ASYNCHRONOUSLY, so the claim below must
+      // wait for the disposal to finish — otherwise setFactory races the
+      // freeing of the slot and pi stands down.
+      const priorHandoff = nativeHandoffs.get(ctx.root)
+      if (priorHandoff !== undefined) {
+        nativeHandoffs.delete(ctx.root)
+        void Promise.resolve(priorHandoff()).then(
+          () => this.claimKernel(ctx),
+          (error: unknown) => {
+            console.error(`[pi-agent] native fiber disposal failed: ${errorChain(error)}`)
+            this.claimKernel(ctx)
+          },
+        )
+      } else {
+        this.claimKernel(ctx)
       }
       return () => {
-        disposeFactory()
+        this.factoryDisposer?.()
+        this.factoryDisposer = undefined
         this.accepting = false
+        console.error(`[pi-agent] kernel teardown (live agents: ${this.liveAgents.size})`)
+        // Sweep live agents: without this, UI-session agents survive the
+        // plugin unload as zombies (their lifecycle fibers belong to the
+        // caller's scope, not this plugin's), each keeping its pi RPC child.
+        const disposals = [...this.liveAgents].map(dispose => dispose().catch((error: unknown) => {
+          console.error(`[pi-agent] agent dispose failed: ${errorChain(error)}`)
+        }))
+        // Live handoff: the Plugins-page toggle disposed this fiber, so load
+        // the REAL AgentLoop plugin on the ROOT scope while the slot is free.
+        // A genuine cordis fiber resolves services like any host plugin (the
+        // hand-built-shim approach died on scope-context service reads); its
+        // own FactoryOwnership sweeps its agents when pi reclaims.
+        try {
+          const fiber = ctx.root.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 4 })
+          nativeHandoffs.set(ctx.root, () => fiber.dispose())
+          Promise.resolve(fiber).catch((error: unknown) => {
+            console.error(`[pi-agent] native kernel fiber failed: ${errorChain(error)}`)
+          })
+          console.error('[pi-agent] native agent-loop plugin loaded on the root scope (plugin disabled)')
+          this.ctx.logger.info('pi-agent: factory handed to the native agent-loop (plugin disabled)')
+        } catch (error: unknown) {
+          console.error(`[pi-agent] native handoff failed: ${errorChain(error)}`)
+          this.ctx.logger.warn(`pi-agent: native handoff failed: ${errorChain(error)}`)
+        }
+        // Persist the handoff: the bundle patch hard-disables agent-loop, so
+        // a restart with the pi row still disabled must boot the native
+        // loop, not no kernel at all.
+        return Promise.allSettled(disposals).then(async () => {
+          await this.writeHandoffMarker()
+        })
       }
     }, 'piAgent.kernel()')
-    ctx.commands.register({
-      name: 'kernel',
-      description: 'Switch the agent kernel for this profile (pi ↔ native dsh)',
-      input: { hint: 'pi | dsh' },
-      handler: (invocation: CommandInvocation): Promise<CommandResult> => this.switchKernel(invocation),
-    })
     const cliEntry = resolvePiCliEntry(config.piCliEntry)
     // Catalog-only adapter: the native model picker lists pi's models.
     // registerAdapter requires at least one route, so registration waits for
-    // the offline catalog read (fast, no network). Skipped while the native
-    // kernel is active — the native providers own the picker then.
+    // the offline catalog read (fast, no network).
     const adapter = new PiCatalogAdapter({
       catalog: () => this.catalogValue,
       piCliEntry: cliEntry,
       logger: { warn: message => { this.ctx.logger.warn(message) } },
     })
-    if (cliEntry !== undefined && !this.nativeKernelPresent) {
+    if (cliEntry !== undefined) {
       void piCatalog(cliEntry).then(catalog => {
-        if (!this.isActive() || this.nativeKernelPresent) return
+        if (!this.isActive()) return
         this.catalogValue = catalog
         this.adapterHandle = ctx.llm.registerAdapter(catalog.providers, adapter)
       }).catch((error: unknown) => {
@@ -261,8 +289,38 @@ export class PiAgentLoop extends Service implements AgentFactory {
       })
     }
     ctx.effect(() => () => { this.adapterHandle?.() }, 'piAgent.adapter()')
+  }
 
-    if (this.nativeKernelPresent) return
+  private isActive(): boolean {
+    return this.accepting
+  }
+
+  /** Disposer of the factory registration, set once the kernel effect claims the slot. */
+  private factoryDisposer: (() => void) | undefined
+
+  /**
+   * Claim the factory slot and everything kernel-owned that follows from it
+   * (projections, declarative agents, the restart marker). Runs after the
+   * constructor's effect — synchronously on fresh boot, after the native
+   * fiber's async disposal on a same-process reclaim.
+   */
+  private claimKernel(ctx: Context): void {
+    let disposeFactory: (() => void) | undefined
+    try {
+      disposeFactory = ctx.agents.setFactory(this)
+    } catch (error: unknown) {
+      this.ctx.logger.warn('pi-agent: factory slot is taken — pi kernel unavailable this session')
+      console.error(`[pi-agent] claim failed: ${errorChain(error)}`)
+      return
+    }
+    this.factoryDisposer = disposeFactory
+    // Won the slot: pi is the kernel again, so a restart must boot pi —
+    // drop the handoff marker that re-enables the native loop.
+    void this.clearHandoffMarker()
+    // Won the slot: this factory owns the projections too (the native UI
+    // reads them; the disabled default loop no longer registers them).
+    ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+    ctx.sessionProjections.register(inboxProjectionDefinition)
     for (const { id, sessionId, resumeSessionId, ...options } of this.config.agents) {
       if (resumeSessionId === undefined || resumeSessionId === '') {
         const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
@@ -285,70 +343,45 @@ export class PiAgentLoop extends Service implements AgentFactory {
     }
   }
 
-  private isActive(): boolean {
-    return this.accepting
-  }
-
-  private static readonly SWITCH_SENTINEL = '# pi-agent kernel switch (managed by /kernel command)'
-
-  /**
-   * Flip the profile-level kernel switch by rewriting the sentinel block in
-   * the profile's cordis.patch.yml. The patch layering is last-write-wins, so
-   * the block overrides the bundle rows; `patchReload: live` picks the change
-   * up without a restart (a restart works too). The switched-to kernel takes
-   * over on the next session open; the dsh log is shared, so sessions
-   * continue across switches.
-   */
-  private async switchKernel(invocation: CommandInvocation): Promise<CommandResult> {
-    const target = invocation.rawInput.trim().toLowerCase()
-    if (target !== 'pi' && target !== 'dsh') {
-      return { kind: 'error', text: 'usage: /kernel pi or /kernel dsh' }
-    }
-    // Always rewrite the full block: idempotent, and it repairs blocks
-    // written before the model-route flip existed.
-    const activeKernel = this.nativeKernelPresent ? 'dsh' : 'pi'
+  /** The active profile's patch file, or undefined when it cannot be resolved. */
+  private profilePatchPath(): string | undefined {
     const profileName = (this.runtime.ctx.get('profileContext') as { name?: string } | undefined)?.name
-    if (profileName === undefined || profileName === '') {
-      return { kind: 'error', text: 'cannot locate the active profile (profileContext unavailable)' }
-    }
+    if (profileName === undefined || profileName === '') return undefined
     const dshHome = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== ''
       ? process.env.DSH_HOME
       : join(homedir(), '.dsh')
-    const patchPath = join(dshHome, 'profiles', profileName, 'cordis.patch.yml')
+    return join(dshHome, 'profiles', profileName, 'cordis.patch.yml')
+  }
+
+  private async writeHandoffMarker(): Promise<void> {
+    const path = this.profilePatchPath()
+    if (path === undefined) {
+      console.error('[pi-agent] handoff marker skipped: profile patch path unknown')
+      return
+    }
     let content = ''
     try {
-      content = await readFile(patchPath, 'utf8')
+      content = await readFile(path, 'utf8')
+    } catch { /* no patch file yet — create it with the marker */ }
+    if (content.includes(HANDOFF_MARKER)) return
+    const block = `\n${HANDOFF_MARKER}\n- id: agent-loop\n  disabled: false\n`
+    await writeFile(path, `${content.trimEnd()}${block}`, 'utf8')
+    console.error(`[pi-agent] handoff marker written to ${path}`)
+  }
+
+  private async clearHandoffMarker(): Promise<void> {
+    const path = this.profilePatchPath()
+    if (path === undefined) return
+    let content = ''
+    try {
+      content = await readFile(path, 'utf8')
     } catch {
-      content = ''
+      return
     }
-    // Strip everything from the sentinel on (the block always lives at EOF).
-    const sentinelIndex = content.indexOf(PiAgentLoop.SWITCH_SENTINEL)
-    if (sentinelIndex >= 0) content = content.slice(0, sentinelIndex).trimEnd()
-    const enableNative = target === 'dsh'
-    const block = [
-      PiAgentLoop.SWITCH_SENTINEL,
-      `# active kernel: ${target} — written ${new Date().toISOString()}`,
-      '- id: agent-loop',
-      `  disabled: ${!enableNative}`,
-      // The default model route is kernel-specific: pi routes come from the
-      // pi catalog, native routes from the dsh LLM adapters.
-      '- id: agent-default-model',
-      '  config:',
-      ...(enableNative
-        ? ['    provider: deepseek-official', '    model: deepseek-flash']
-        : ['    provider: deepseek', '    model: deepseek-flash']),
-      '',
-    ].join('\n')
-    const next = content === '' ? block : `${content.trimEnd()}\n\n${block}\n`
-    await writeFile(patchPath, next, 'utf8')
-    this.ctx.logger.info(`pi-agent: kernel switch written to ${patchPath} (${target})`)
-    const switched = activeKernel !== target
-    return {
-      kind: 'success',
-      text: switched
-        ? `Switched to the ${target} kernel. Restart dsh to apply, then reopen the session — history continues from the shared dsh log.`
-        : `Already on the ${target} kernel (switch block refreshed).`,
-    }
+    const at = content.indexOf(HANDOFF_MARKER)
+    if (at < 0) return
+    await writeFile(path, `${content.slice(0, at).trimEnd()}\n`, 'utf8')
+    console.error(`[pi-agent] handoff marker cleared from ${path}`)
   }
 
   private reportStartupFailure(configId: string, action: 'create' | 'resume', sessionId: SessionId, error: unknown): void {
@@ -538,9 +571,18 @@ export class PiAgentLoop extends Service implements AgentFactory {
       abort.abort(new Error(`agent "${id}" lifecycle disposed`))
       callerSignal?.removeEventListener('abort', onCallerAbort)
       this.teardownSignals = this.teardownSignals.filter(entry => entry !== onFactoryTeardown)
+      this.liveAgents.delete(dispose)
       if (machine === undefined) await machineReady.promise
       if (machine !== undefined) {
-        machine.cancel({ kind: 'disposed' })
+        // The inbox port reads the inbox projection, whose registration the
+        // fiber teardown may already have unwound (LIFO disposes the
+        // projections registered inside this effect before this disposer
+        // runs) — dropping pending input is moot at that point anyway.
+        try {
+          machine.cancel({ kind: 'disposed' })
+        } catch (error: unknown) {
+          console.error(`[pi-agent] agent dispose: cancel skipped (${errorChain(error)})`)
+        }
         await machine.whenIdle()
         await machine.disposeDriver()
         detachAgent?.()
@@ -549,6 +591,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
       }
       await handle?.close().catch(() => {})
     })())
+    this.liveAgents.add(dispose)
 
     ownerCtx.effect(function* () {
       machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands, loopCtx.get('approval') as ApprovalService, () => loopCtx.tools.schemas())
@@ -584,6 +627,8 @@ export class PiAgentLoop extends Service implements AgentFactory {
   }
 
   private teardownSignals: Array<() => void> = []
+  /** Memoized dispose of every live agent, swept on plugin teardown (zombie guard). */
+  private liveAgents = new Set<() => Promise<void>>()
 
   /** Wrap prepare + setup + publish with rollback on any failure. */
   private async setupAndPublish(

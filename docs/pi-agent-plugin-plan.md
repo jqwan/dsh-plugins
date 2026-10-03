@@ -359,3 +359,47 @@ packages/agent/pi-agent/
 6. **inject 无 pi 对应物**：缓存到下一 prompt 前缀（P8）。
 7. **AgentFactory 无成文稳定性承诺**（0.2.0-rc 事实契约）——接受；适配面已量化为最小。
 8. **pi usage 字段名**实现时核对（input/output vs inputTokens/outputTokens；cost 不映射）。
+
+---
+
+## 14. 运行时内核切换（插件页行开关，已实测）
+
+入口：插件页 → `@deepseek-ai/dsh-pi-agent` 详情页 → 「组件」行开关
+（`setPluginEnabled` → 写 profile patch 行 `- id: pi-agent disabled: …` → 热 reconcile）。
+外层「包」开关走 `setBundleEnabled`（增删 bundles），是安装/卸载语义、重启生效，
+运行时会因 dsh 调和顺序（先激活新行、后等旧 fiber 释放）撞工厂槽位而报错——
+切换内核一律用行开关。
+
+### 14.1 机制（pi-agent/src/index.ts）
+
+- **关闭（pi → 原生）**：pi fiber 的 kernel effect disposer 里
+  ① 同步 `disposeFactory()` 释放槽位；② 清算 `liveAgents`（防僵尸 pi 进程，
+  agent 的生命周期 fiber 属调用方作用域，插件卸载不会自动带走）；③
+  `ctx.root.plugin(AgentLoop, …)` 把**真 AgentLoop 插件**挂到根作用域——
+  真 fiber 的服务解析/agent 生命周期全走宿主正规机制（手搭内核 + 上下文
+  shim 的路线死于 scope ctx 的跨插件服务解析，已废弃）；④ 向 profile patch
+  写「交接标记」（`- id: agent-loop disabled: false`）。
+- **重新启用（原生 → pi）**：构造时发现 `nativeHandoffs` 有存根 →
+  **await 原生 fiber dispose 完成**（异步！同步 reclaim 会与槽位释放赛跑，
+  pi 会 stand down）→ `setFactory` 收回 → 清除交接标记。
+- **标记的意义**：bundle patch 硬禁用了 agent-loop；行开关关闭状态下重启
+  dsh 时，pi 行不加载、agent-loop 又被禁 → 无内核死态（发消息被静默吞掉）。
+  标记让这次重启启动原生内核。pi 重新构造时清除标记，恢复 bundle 语义。
+
+### 14.2 重启矩阵（实测）
+
+| 行开关状态 | 重启后内核 | 依据 |
+|---|---|---|
+| 开（无标记） | pi | bundle patch 禁 agent-loop，pi 插槽 |
+| 关（有标记） | 原生 | 标记覆盖 bundle 的禁用行 |
+| 开（残留标记） | 原生（pi stand down）| 标记未及时清除；pi 构造时清标记，**再重启一次**恢复 pi |
+
+### 14.3 已知边界
+
+- 关闭时清算活 agent → 会话发 `session/disposed`/`end-seed`，客户端会话列表
+  短暂变少（文件都在，刷新恢复）；正在该会话的客户端视图发消息被静默丢弃，
+  新建会话即可。
+- 重新启用时热调和可能弹一次「启用失败」（标记驱动的 agent-loop 行激活与
+  pi 收回竞速）——状态正确收敛，忽略即可。
+- 同一会话跨内核续接已验证：原生生代创建的会话，pi 收回后直接续跑
+  （dsh 日志唯一事实源）。路由按会话保留；pi 目录外的路由被驱动器过滤。

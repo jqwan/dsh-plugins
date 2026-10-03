@@ -6,17 +6,19 @@
 # pi 会话文件只是 pi 进程的工作缓存——每次 pi 内核启动时从 dsh 日志
 # 无条件重建，agent 销毁时删除。缓存目录默认 $DSH_HOME/pi-agent。
 #
-# 切换回原生内核：在 profile 层 cordis.patch.yml 追加
-#   - id: agent-loop
-#     disabled: false
-# （本插件的 /kernel 命令自动化此操作；切换后本插件自动让位。）
+# 内核切换（运行时）：插件详情页里的「组件」行开关是实时内核开关——
+# 关闭：本插件卸载时把真 AgentLoop 插件挂到根作用域（工厂槽位实时移交，
+#   并在 profile patch 写「agent-loop 重新启用」标记，保证关着重启也能
+#   启动原生内核，不会出现无内核死态）；重新启用：等原生 fiber 释放完
+#   槽位后 pi 收回，并清除标记。会话历史共享 dsh 日志，跨内核连续。
+# 注意：外层「包」开关走安装/卸载语义（重启生效），运行时会因 dsh 热调和
+# 的激活顺序撞工厂槽位而报错——切换内核请用详情页里的行开关。
+#
+# 默认模型路由保持原生（deepseek-official）；pi 会话的路由由本插件
+# config.defaultProvider/defaultModel 提供（不来自 pi 目录的路由会被
+# 驱动器过滤回 pi 默认）。
 - id: agent-loop
   disabled: true
-# 原生模型选择器的默认路由指向 pi 目录里的模型（provider id 与 pi 一致）。
-- id: agent-default-model
-  config:
-    provider: deepseek
-    model: deepseek-flash
 - insert:
     - id: pi-agent
       name: '@deepseek-ai/dsh-pi-agent'

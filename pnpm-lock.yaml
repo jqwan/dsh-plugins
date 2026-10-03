@@ -35,6 +35,7 @@ overrides:
   '@deepseek-ai/dsh-commands': link:../deepseek-harness/packages/interaction/commands
   '@deepseek-ai/dsh-user-approval': link:../deepseek-harness/packages/interaction/user-approval
   '@deepseek-ai/dsh-tools': link:../deepseek-harness/packages/core/tools
+  '@deepseek-ai/dsh-agent-loop': link:../deepseek-harness/packages/core/agent-loop
 
 importers:
 
@@ -58,6 +59,9 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../../../../deepseek-harness/packages/core/agent
         version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-agent-loop':
+        specifier: link:../../../../deepseek-harness/packages/core/agent-loop
+        version: link:../../../../deepseek-harness/packages/core/agent-loop
       '@deepseek-ai/dsh-brand':
         specifier: link:../../../../deepseek-harness/packages/util/brand
         version: link:../../../../deepseek-harness/packages/util/brand
