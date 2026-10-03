@@ -13,6 +13,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -30,6 +31,7 @@ import type {
   TurnBoundaryProjection,
 } from '@deepseek-ai/dsh-agent'
 import { errorChain, type AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
+import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import {
   interruptedTurnClosers,
   SessionLogOffset,
@@ -38,10 +40,14 @@ import {
 } from '@deepseek-ai/dsh-session'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+import type {} from '@deepseek-ai/dsh-tools'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import { PiAgent, type PiAgentOptions } from './pi-agent.ts'
+import { exportPiSession } from './exporter.ts'
+
+export { exportPiSession }
 import { PiCatalogAdapter } from './llm-adapter.ts'
 import { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
 import { inboxProjectionDefinition } from './inbox.ts'
@@ -144,7 +150,7 @@ interface PreparedAgent {
 }
 
 export class PiAgentLoop extends Service implements AgentFactory {
-  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval']
+  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval', 'tools']
 
   /** Runtime schema for declarative agents. */
   static Config = z.object({
@@ -171,6 +177,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
   private accepting = true
   private catalogValue: PiCatalog | undefined
   private adapterHandle: AdapterRegistrationHandle | undefined
+  private nativeKernelPresent = false
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'piAgent')
@@ -182,25 +189,71 @@ export class PiAgentLoop extends Service implements AgentFactory {
       ...(config.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: config.defaultThinkingLevel }),
       agents: config.agents ?? [],
     }
-    // The native UI reads these folds; the disabled default loop no longer
-    // registers them, so this factory owns both keys.
-    ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
-    ctx.sessionProjections.register(inboxProjectionDefinition)
     this.runtime = { ctx }
-    ctx.effect(() => () => { this.accepting = false }, 'piAgent.teardown()')
-    ctx.effect(() => ctx.agents.setFactory(this), 'piAgent.setFactory()')
+    // Kernel coexistence: the factory slot is single; when the native
+    // agent-loop row is enabled (the /kernel switch turned it on) it reliably
+    // wins the race (base bundle rows activate first), and this service
+    // stands down — keeping only the /kernel command so the switch can be
+    // flipped back from within the app. Everything kernel-owned (factory,
+    // projections, declarative agents) is claimed inside one effect whose
+    // outcome decides the rest of startup.
+    ctx.effect(() => {
+      let disposeFactory: (() => void) | undefined
+      try {
+        disposeFactory = ctx.agents.setFactory(this)
+      } catch (error: unknown) {
+        this.nativeKernelPresent = true
+        this.ctx.logger.info('pi-agent: native agent-loop owns the factory — standing down (dsh kernel active)')
+        return () => {}
+      }
+      // Won the slot: this factory owns the projections too (the native UI
+      // reads them; the disabled default loop no longer registers them).
+      ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+      ctx.sessionProjections.register(inboxProjectionDefinition)
+      for (const { id, sessionId, resumeSessionId, ...options } of this.config.agents) {
+        if (resumeSessionId === undefined || resumeSessionId === '') {
+          const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
+          void this.createConfigured(ctx, configuredId, options).catch(
+            (error: unknown) => this.reportStartupFailure(id, 'create', configuredId, error),
+          )
+          continue
+        }
+        ctx.effect(() => {
+          const persistence = this.runtime.ctx.get('sessionPersistence')
+          if (persistence === undefined) {
+            this.reportStartupFailure(id, 'resume', resumeSessionId, new Error('no session persistence backend'))
+            return () => {}
+          }
+          void this.resumeWith(ctx, persistence, { resumeSessionId, agentOptions: options }).catch(
+            (error: unknown) => this.reportStartupFailure(id, 'resume', resumeSessionId, error),
+          )
+          return () => {}
+        }, `piAgent.resume(${id})`)
+      }
+      return () => {
+        disposeFactory()
+        this.accepting = false
+      }
+    }, 'piAgent.kernel()')
+    ctx.commands.register({
+      name: 'kernel',
+      description: 'Switch the agent kernel for this profile (pi ↔ native dsh)',
+      input: { hint: 'pi | dsh' },
+      handler: (invocation: CommandInvocation): Promise<CommandResult> => this.switchKernel(invocation),
+    })
     const cliEntry = resolvePiCliEntry(config.piCliEntry)
     // Catalog-only adapter: the native model picker lists pi's models.
     // registerAdapter requires at least one route, so registration waits for
-    // the offline catalog read (fast, no network).
+    // the offline catalog read (fast, no network). Skipped while the native
+    // kernel is active — the native providers own the picker then.
     const adapter = new PiCatalogAdapter({
       catalog: () => this.catalogValue,
       piCliEntry: cliEntry,
       logger: { warn: message => { this.ctx.logger.warn(message) } },
     })
-    if (cliEntry !== undefined) {
+    if (cliEntry !== undefined && !this.nativeKernelPresent) {
       void piCatalog(cliEntry).then(catalog => {
-        if (!this.isActive()) return
+        if (!this.isActive() || this.nativeKernelPresent) return
         this.catalogValue = catalog
         this.adapterHandle = ctx.llm.registerAdapter(catalog.providers, adapter)
       }).catch((error: unknown) => {
@@ -209,6 +262,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     }
     ctx.effect(() => () => { this.adapterHandle?.() }, 'piAgent.adapter()')
 
+    if (this.nativeKernelPresent) return
     for (const { id, sessionId, resumeSessionId, ...options } of this.config.agents) {
       if (resumeSessionId === undefined || resumeSessionId === '') {
         const configuredId = sessionId ?? brandString<SessionId>(`${id}-session-${randomUUID()}`)
@@ -233,6 +287,68 @@ export class PiAgentLoop extends Service implements AgentFactory {
 
   private isActive(): boolean {
     return this.accepting
+  }
+
+  private static readonly SWITCH_SENTINEL = '# pi-agent kernel switch (managed by /kernel command)'
+
+  /**
+   * Flip the profile-level kernel switch by rewriting the sentinel block in
+   * the profile's cordis.patch.yml. The patch layering is last-write-wins, so
+   * the block overrides the bundle rows; `patchReload: live` picks the change
+   * up without a restart (a restart works too). The switched-to kernel takes
+   * over on the next session open; the dsh log is shared, so sessions
+   * continue across switches.
+   */
+  private async switchKernel(invocation: CommandInvocation): Promise<CommandResult> {
+    const target = invocation.rawInput.trim().toLowerCase()
+    if (target !== 'pi' && target !== 'dsh') {
+      return { kind: 'error', text: 'usage: /kernel pi or /kernel dsh' }
+    }
+    // Always rewrite the full block: idempotent, and it repairs blocks
+    // written before the model-route flip existed.
+    const activeKernel = this.nativeKernelPresent ? 'dsh' : 'pi'
+    const profileName = (this.runtime.ctx.get('profileContext') as { name?: string } | undefined)?.name
+    if (profileName === undefined || profileName === '') {
+      return { kind: 'error', text: 'cannot locate the active profile (profileContext unavailable)' }
+    }
+    const dshHome = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== ''
+      ? process.env.DSH_HOME
+      : join(homedir(), '.dsh')
+    const patchPath = join(dshHome, 'profiles', profileName, 'cordis.patch.yml')
+    let content = ''
+    try {
+      content = await readFile(patchPath, 'utf8')
+    } catch {
+      content = ''
+    }
+    // Strip everything from the sentinel on (the block always lives at EOF).
+    const sentinelIndex = content.indexOf(PiAgentLoop.SWITCH_SENTINEL)
+    if (sentinelIndex >= 0) content = content.slice(0, sentinelIndex).trimEnd()
+    const enableNative = target === 'dsh'
+    const block = [
+      PiAgentLoop.SWITCH_SENTINEL,
+      `# active kernel: ${target} — written ${new Date().toISOString()}`,
+      '- id: agent-loop',
+      `  disabled: ${!enableNative}`,
+      // The default model route is kernel-specific: pi routes come from the
+      // pi catalog, native routes from the dsh LLM adapters.
+      '- id: agent-default-model',
+      '  config:',
+      ...(enableNative
+        ? ['    provider: deepseek-official', '    model: deepseek-flash']
+        : ['    provider: deepseek', '    model: deepseek-flash']),
+      '',
+    ].join('\n')
+    const next = content === '' ? block : `${content.trimEnd()}\n\n${block}\n`
+    await writeFile(patchPath, next, 'utf8')
+    this.ctx.logger.info(`pi-agent: kernel switch written to ${patchPath} (${target})`)
+    const switched = activeKernel !== target
+    return {
+      kind: 'success',
+      text: switched
+        ? `Switched to the ${target} kernel. Restart dsh to apply, then reopen the session — history continues from the shared dsh log.`
+        : `Already on the ${target} kernel (switch block refreshed).`,
+    }
   }
 
   private reportStartupFailure(configId: string, action: 'create' | 'resume', sessionId: SessionId, error: unknown): void {
@@ -435,7 +551,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     })())
 
     ownerCtx.effect(function* () {
-      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands, loopCtx.get('approval') as ApprovalService)
+      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands, loopCtx.get('approval') as ApprovalService, () => loopCtx.tools.schemas())
       machineReady.resolve()
       yield machine.scope.rawDispose
     }, `piAgent.lifecycle(${id})`)

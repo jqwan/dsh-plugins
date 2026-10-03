@@ -20,18 +20,13 @@
       "default": "./lib/invariant.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json",
-    "./persistence": {
-      "types": "./lib/types/persistence.d.ts",
-      "default": "./lib/persistence.js"
-    }
+    "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
     "lib/invariant.js",
     "lib/types/**/*.d.ts",
-    "cordis.patch.yml",
-    "lib/persistence.js"
+    "cordis.patch.yml"
   ],
   "license": "MIT",
   "scripts": {
@@ -55,7 +50,8 @@
     "@deepseek-ai/schemastery": "^3.18.4",
     "@deepseek-ai/dsh-invariants": "0.2.0-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -72,7 +68,8 @@
     "typescript": "^5.8.0",
     "@deepseek-ai/dsh-invariants": "0.2.0-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "dsh": {
     "bundle": {

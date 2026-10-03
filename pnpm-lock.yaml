@@ -34,6 +34,7 @@ overrides:
   '@deepseek-ai/schemastery': link:../deepseek-harness/vendor/schemastery
   '@deepseek-ai/dsh-commands': link:../deepseek-harness/packages/interaction/commands
   '@deepseek-ai/dsh-user-approval': link:../deepseek-harness/packages/interaction/user-approval
+  '@deepseek-ai/dsh-tools': link:../deepseek-harness/packages/core/tools
 
 importers:
 
@@ -81,6 +82,9 @@ importers:
       '@deepseek-ai/dsh-session-projection':
         specifier: link:../../../../deepseek-harness/packages/session/session-projection
         version: link:../../../../deepseek-harness/packages/session/session-projection
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../../deepseek-harness/packages/core/tools
+        version: link:../../../../deepseek-harness/packages/core/tools
       '@deepseek-ai/dsh-user-approval':
         specifier: link:../../../../deepseek-harness/packages/interaction/user-approval
         version: link:../../../../deepseek-harness/packages/interaction/user-approval

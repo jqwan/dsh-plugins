@@ -36,13 +36,17 @@ import {
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Session, SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai/dsh-session'
+import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
+import { mkdir, writeFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandRuntime, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-commands'
 import { PiInbox } from './inbox.ts'
 import { PiDriver, type DriverTurnOutcome } from './driver.ts'
+import { exportPiSession } from './exporter.ts'
 
 type Phase =
   | { kind: 'idle'; lastTurn: number }
@@ -207,6 +211,7 @@ export class PiAgent implements Agent {
     public readonly session: Session,
     private readonly commands: CommandRuntime,
     private readonly approval: ApprovalService,
+    private readonly toolSchemas: () => ToolSchema[],
   ) {
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
@@ -264,6 +269,8 @@ export class PiAgent implements Agent {
     this.stopSelectionWatch?.()
     this.stopSelectionWatch = undefined
     await this.driver.stop()
+    // The cache is disposable by definition: the dsh log holds everything.
+    await rm(join(this.options.sessionsDir ?? '.', `${this.id}.jsonl`), { force: true }).catch(() => {})
   }
 
   private setPhase(next: Phase): void {
@@ -326,6 +333,20 @@ export class PiAgent implements Agent {
         done.resolve()
       }
     })()
+  }
+
+  /**
+   * Rebuild the pi cache file from the dsh log (the single source of truth).
+   * Runs unconditionally before every pi spawn, so the cache is a pure
+   * function of the log — no staleness detection. The driver then points
+   * pi's --session at it; live turns append pi's own record until disposal.
+   */
+  private async refreshCache(): Promise<void> {
+    const events = this.session.snapshotEvents()
+    const content = exportPiSession(events, this.id, this.session.header.cwd)
+    const cachePath = join(this.options.sessionsDir ?? '.', `${this.id}.jsonl`)
+    await mkdir(join(cachePath, '..'), { recursive: true })
+    await writeFile(cachePath, content, 'utf8')
   }
 
   private wakeDriver(wakeAfterAbort = false): void {
@@ -397,6 +418,7 @@ export class PiAgent implements Agent {
           this.session.append('user/message', message, { surfaceOp: 'append' })
         }
         const text = claimed.map(userMessageText).filter(part => part !== '').join('\n\n')
+        await this.refreshCache()
         await this.driver.start()
         this.appendRequestAnchor()
         void this.loadPiCommands().catch((error: unknown) => {
@@ -659,7 +681,11 @@ export class PiAgent implements Agent {
       ...(this.options.reasoningEffort === undefined ? {} : { reasoningEffort: this.options.reasoningEffort }),
       ...(this.options.maxTokens === undefined ? {} : { maxTokens: this.options.maxTokens }),
     }
-    const header = canonicalHeader({ config })
+    // The anchor records the native registry's schemas so a future native-
+    // kernel resume sees a coherent tool history (an empty tools baseline
+    // would make the native loop flag every tool as a deferred addition).
+    const tools = this.toolSchemas()
+    const header = canonicalHeader({ config, ...(tools.length > 0 ? { tools } : {}) })
     const baseline = this.session.requestHeader()
     if (!this.requestHeaderLogged) {
       this.session.append('request/header', {

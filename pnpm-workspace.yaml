@@ -37,3 +37,4 @@ overrides:
   '@deepseek-ai/schemastery': 'link:../deepseek-harness/vendor/schemastery'
   '@deepseek-ai/dsh-commands': 'link:../deepseek-harness/packages/interaction/commands'
   '@deepseek-ai/dsh-user-approval': 'link:../deepseek-harness/packages/interaction/user-approval'
+  '@deepseek-ai/dsh-tools': 'link:../deepseek-harness/packages/core/tools'

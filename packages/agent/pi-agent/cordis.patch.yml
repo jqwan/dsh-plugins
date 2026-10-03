@@ -1,6 +1,15 @@
 # pi 内核插件：用 pi coding agent（RPC 模式）替换 dsh 默认 agent 内核。
 # 禁用默认 agent-loop 行（patch 按 id 寻址、后写者胜），插入本插件行。
 # UI、工具呈现、会话历史、修改可视化等宿主能力保持原生不动。
+#
+# 存储模型（方案二）：dsh 会话日志（~/.dsh/sessions）是唯一事实源；
+# pi 会话文件只是 pi 进程的工作缓存——每次 pi 内核启动时从 dsh 日志
+# 无条件重建，agent 销毁时删除。缓存目录默认 $DSH_HOME/pi-agent。
+#
+# 切换回原生内核：在 profile 层 cordis.patch.yml 追加
+#   - id: agent-loop
+#     disabled: false
+# （本插件的 /kernel 命令自动化此操作；切换后本插件自动让位。）
 - id: agent-loop
   disabled: true
 # 原生模型选择器的默认路由指向 pi 目录里的模型（provider id 与 pi 一致）。
@@ -14,15 +23,4 @@
       config:
         defaultProvider: deepseek
         defaultModel: deepseek-flash
-        # 可选：dataDir / piCliEntry / defaultThinkingLevel
-
-# pi-only 会话持久化（可选）：DSH_PI_ONLY=1 时以 pi 会话文件为唯一事实源，
-# dsh 日志不落盘（内存汇），侧栏/搜索/冷读经 pi 文件重放。
-# 默认 dual：dsh 日志照常落盘（现行为）。root 默认与内核 dataDir 一致；
-# 覆盖 pi-agent 行的 dataDir 时需同步覆盖此处 root。
-- id: session-persistence-jsonl
-  disabled: !!js "process.env.DSH_PI_ONLY === '1'"
-- insert:
-    - id: pi-session-persistence
-      name: '@deepseek-ai/dsh-pi-agent/persistence'
-      disabled: !!js "process.env.DSH_PI_ONLY !== '1'"
+        # 可选：dataDir（pi 缓存目录）/ piCliEntry / defaultThinkingLevel

@@ -26,7 +26,6 @@ const packages = {
     directory: 'packages/agent/pi-agent',
     source: 'src/index.ts',
     invariant: 'src/invariant.ts',
-    extraHostEntries: [{ source: 'src/persistence.ts', outfile: 'lib/persistence.js' }],
     // dsh 运行时包一律 external：宿主进程里必须与 harness 同实例（双实例即类型撕裂）。
     externals: [
       '@deepseek-ai/schemastery',
