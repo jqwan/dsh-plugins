@@ -403,3 +403,18 @@ packages/agent/pi-agent/
   pi 收回竞速）——状态正确收敛，忽略即可。
 - 同一会话跨内核续接已验证：原生生代创建的会话，pi 收回后直接续跑
   （dsh 日志唯一事实源）。路由按会话保留；pi 目录外的路由被驱动器过滤。
+
+### 14.4 会话格式：受保护 system 头（已修复，af87a84）
+
+v4 格式要求日志**第一条 surface 事件**是 `system/message`（受保护头）。pi 工厂建会话不写头，
+原生内核 resume 这种无头会话时会把自己的 system/message 追加在中段——永久格式违规，pi 再
+resume 即报 `system/message requires a protected first surface head`（用户复现：pi 建 → 切
+原生发 → 切回 pi resume 失败）。
+
+修复：pi 首个 open step 内（step/start 之后、user/message 之前）种受保护头（原生记录形状：
+role/content/source kind system-prompt/surfaceOp append）；此后原生 resume 走合法的
+「替换头」操作而非非法追加。两个边界：
+- 修复前已存在的无头会话**不能**事后补头（追加即违规），保持 pi-only；被原生污染过的日志
+  可离线修复（剔除中段 system/message 后重压缩）。
+- resume 失败会把会话从 workspace.json 的 sessionIds 索引移除（侧栏消失）；修复文件后需
+  手工把 session id 加回对应工作区的索引。侧栏列表来自该显式索引，不是目录扫描。
