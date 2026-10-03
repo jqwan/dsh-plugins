@@ -362,47 +362,69 @@ packages/agent/pi-agent/
 
 ---
 
-## 14. 运行时内核切换（插件页行开关，已实测）
+## 14. 内核切换（重启式，已实测）
 
 入口：插件页 → `@deepseek-ai/dsh-pi-agent` 详情页 → 「组件」行开关
 （`setPluginEnabled` → 写 profile patch 行 `- id: pi-agent disabled: …` → 热 reconcile）。
-外层「包」开关走 `setBundleEnabled`（增删 bundles），是安装/卸载语义、重启生效，
-运行时会因 dsh 调和顺序（先激活新行、后等旧 fiber 释放）撞工厂槽位而报错——
-切换内核一律用行开关。
+外层「包」开关是安装/卸载语义，切换内核一律用行开关。
+
+**方向定案（2026-10-04）：关闭即时生效，开启重启生效。** 运行时双向热切换
+（字段抢槽 + marker 清除 + 热调和）被证伪：① dsh 的 HMR 服务监听 profile
+patch 文件（`hmr.watchConfig → refresh → reconcileProfilePatches`），任何
+文件与运行行状态的偏差都会被下一次 reload「纠正」——接管后清 marker 必然
+触发原生行停用，其 `setFactory` disposer 会连带清掉 pi 抢来的槽位（
+"no agent factory registered"）并把它挂在 agent 作用域上的会话拖出侧边栏；
+② 行激活顺序不保证，marker 引导的原生行是 required 插件，pi 抢先认领会
+直接 abort 整个启动；③ 原生会话挂载在 agent 作用域（`agent.ctx.sessions.enter`），
+任何原生行停用都掉侧边栏——上游设计，插件侧只能收养缓解。
 
 ### 14.1 机制（pi-agent/src/index.ts）
 
-- **关闭（pi → 原生）**：pi fiber 的 kernel effect disposer 里
-  ① 同步 `disposeFactory()` 释放槽位；② 清算 `liveAgents`（防僵尸 pi 进程，
-  agent 的生命周期 fiber 属调用方作用域，插件卸载不会自动带走）；③
-  `ctx.root.plugin(AgentLoop, …)` 把**真 AgentLoop 插件**挂到根作用域——
-  真 fiber 的服务解析/agent 生命周期全走宿主正规机制（手搭内核 + 上下文
-  shim 的路线死于 scope ctx 的跨插件服务解析，已废弃）；④ 向 profile patch
-  写「交接标记」（`- id: agent-loop disabled: false`）。
-- **重新启用（原生 → pi）**：构造时发现 `nativeHandoffs` 有存根 →
-  **await 原生 fiber dispose 完成**（异步！同步 reclaim 会与槽位释放赛跑，
-  pi 会 stand down）→ `setFactory` 收回 → 清除交接标记。
+- **关闭（pi → 原生，即时）**：kernel effect disposer 里 ① `disposeFactory()`
+  释放槽位；② 清算 `liveAgents`（防僵尸 pi 进程；会话挂载在进程级载体，
+  不发 `session/disposed`，侧边栏不掉行）；③ 写「交接标记」
+  （`- id: agent-loop disabled: false`）；④ deferred 80ms 热调和 → loader
+  激活原生行 → 原生 `setFactory` 认领。内核不中断，新会话即刻可用。
+- **开启（原生 → pi）**：
+  - 无标记（正常 pi 启动）：构造期直接 `setFactory` 认领。
+  - 有标记 + 启动期（uptime < 20s）：**绝不立即认领**——marker 引导的原生行
+    是同轮 loader 的 required 插件，抢跑会 abort 启动。deferred 到
+    `loader.await()` 之后：原生行已干净认领 → boot 接管（清 marker → 热调和
+    退役原生行 → pi 认领 freed 槽位），一次重启完成切换。接管窗口用
+    `switching` + root 级 `session/disposed` 观察者**收养**被退役行孤儿化的
+    会话（重新 enter+announce，客户端 removed→added，行不丢）。
+  - 有标记 + 运行中开启（uptime ≥ 20s）：**惰性**——保留 marker（文件继续
+    如实描述运行中的原生行，HMR 不会动手），日志提示「重启 dsh 切换到 pi」。
+    下次重启走上面的 boot 接管。
 - **标记的意义**：bundle patch 硬禁用了 agent-loop；行开关关闭状态下重启
-  dsh 时，pi 行不加载、agent-loop 又被禁 → 无内核死态（发消息被静默吞掉）。
-  标记让这次重启启动原生内核。pi 重新构造时清除标记，恢复 bundle 语义。
+  dsh 时，pi 行不加载、agent-loop 又被禁 → 无内核死态。标记让这次重启启动
+  原生内核。pi 认领成功后清除标记，恢复 bundle 语义。
+- **模型列表跟随内核**：pi 目录 adapter 只在真正拥有槽位时注册
+  （`kernelOwned` 门控）；惰性 pi 保持原生列表。
 
-### 14.2 重启矩阵（实测）
+### 14.2 状态矩阵（实测）
 
-| 行开关状态 | 重启后内核 | 依据 |
-|---|---|---|
-| 开（无标记） | pi | bundle patch 禁 agent-loop，pi 插槽 |
-| 关（有标记） | 原生 | 标记覆盖 bundle 的禁用行 |
-| 开（残留标记） | 原生（pi stand down）| 标记未及时清除；pi 构造时清标记，**再重启一次**恢复 pi |
+| 操作 | 结果 |
+|---|---|
+| pi 开机自启（无标记） | pi 认领，pi 内核 |
+| 行开关关闭（运行中） | 原生行热激活接管，侧边栏稳定，会话不中断 |
+| 行开关开启（运行中，原生服役） | pi 惰性 + 保留标记，原生继续服务，侧边栏稳定 |
+| 关闭后重启（有标记） | 原生认领，pi 行不加载 |
+| 开启后重启（有标记） | 原生先认领（required），pi deferred boot 接管，一次重启完成 |
 
 ### 14.3 已知边界
 
-- 关闭时清算活 agent → 会话发 `session/disposed`/`end-seed`，客户端会话列表
-  短暂变少（文件都在，刷新恢复）；正在该会话的客户端视图发消息被静默丢弃，
-  新建会话即可。
-- 重新启用时热调和可能弹一次「启用失败」（标记驱动的 agent-loop 行激活与
-  pi 收回竞速）——状态正确收敛，忽略即可。
-- 同一会话跨内核续接已验证：原生生代创建的会话，pi 收回后直接续跑
-  （dsh 日志唯一事实源）。路由按会话保留；pi 目录外的路由被驱动器过滤。
+- **会话挂载与跨内核 resume**：pi 会话挂载在进程级载体（侧边栏跨切换稳定），
+  但 store 对同 id 唯一——关闭 pi 后**不重启**直接在原生内核打开 pi 生代会话，
+  原生 resume 会在 `enter()` 撞唯一性检查（上游设计，原生代码不可改）。
+  按提示重启即恢复（重启后 store 重建，从持久层冷恢复，dsh 日志唯一事实源）。
+  pi 侧同进程 resume 已做活会话复用（`resumeWith` 检测 mounted 会话直接
+  围绕它重建驱动，跳过 enter/announce）。
+- boot 接管窗口（启动后数秒）与客户端自动重开竞速：若客户端在原生行存活的
+  窗口内 resume 了会话，接管时由收养观察者保行；该会话的打开视图仍需重开
+  （agent 已随行退役，历史无损）。
+- 切换后模型/命令列表按当前内核展示；`/goal` 等原生命令在 pi 下仍是空转
+  （待 pi extension 桥接，未实施）。
 
 ### 14.4 会话格式：受保护 system 头（已修复，af87a84）
 
