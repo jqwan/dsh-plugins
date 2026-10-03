@@ -15,3 +15,14 @@
         defaultProvider: deepseek
         defaultModel: deepseek-flash
         # 可选：dataDir / piCliEntry / defaultThinkingLevel
+
+# pi-only 会话持久化（可选）：DSH_PI_ONLY=1 时以 pi 会话文件为唯一事实源，
+# dsh 日志不落盘（内存汇），侧栏/搜索/冷读经 pi 文件重放。
+# 默认 dual：dsh 日志照常落盘（现行为）。root 默认与内核 dataDir 一致；
+# 覆盖 pi-agent 行的 dataDir 时需同步覆盖此处 root。
+- id: session-persistence-jsonl
+  disabled: !!js "process.env.DSH_PI_ONLY === '1'"
+- insert:
+    - id: pi-session-persistence
+      name: '@deepseek-ai/dsh-pi-agent/persistence'
+      disabled: !!js "process.env.DSH_PI_ONLY !== '1'"

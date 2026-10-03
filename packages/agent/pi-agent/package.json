@@ -20,13 +20,18 @@
       "default": "./lib/invariant.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./persistence": {
+      "types": "./lib/types/persistence.d.ts",
+      "default": "./lib/persistence.js"
+    }
   },
   "files": [
     "lib/index.js",
     "lib/invariant.js",
     "lib/types/**/*.d.ts",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "lib/persistence.js"
   ],
   "license": "MIT",
   "scripts": {

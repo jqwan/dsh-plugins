@@ -79,7 +79,7 @@ function userMessageText(message: UserMessage): string {
 }
 
 /** Translate pi assistant content blocks into dsh content blocks (lossless subset). */
-function translateAssistantBlocks(piBlocks: unknown): ContentBlock[] {
+export function translateAssistantBlocks(piBlocks: unknown): ContentBlock[] {
   if (!Array.isArray(piBlocks)) return []
   const blocks: ContentBlock[] = []
   for (const raw of piBlocks) {
@@ -109,7 +109,7 @@ function translateAssistantBlocks(piBlocks: unknown): ContentBlock[] {
 }
 
 /** Map pi usage counters onto dsh TokenUsage (disjoint input semantics match). */
-function translateUsage(piUsage: unknown): TokenUsage | undefined {
+export function translateUsage(piUsage: unknown): TokenUsage | undefined {
   if (piUsage === undefined || piUsage === null || typeof piUsage !== 'object') return undefined
   const usage = piUsage as Record<string, unknown>
   const input = typeof usage.input === 'number' ? usage.input : undefined
