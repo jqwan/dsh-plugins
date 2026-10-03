@@ -27,6 +27,7 @@ import type {
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, LlmCallConfig, TokenUsage, ToolCallId, UserMessage } from '@deepseek-ai/dsh-llm'
 import { LlmAttemptId } from '@deepseek-ai/dsh-llm'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import {
   createAssistantMessage,
   createToolResultMessage,
@@ -40,6 +41,10 @@ import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+
+/** Surface event types whose log order the v4 format guards. */
+const SURFACE_EVENT_TYPES = new Set(['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result'])
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandRuntime, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
@@ -393,6 +398,32 @@ export class PiAgent implements Agent {
    * One pi run: open the turn, open step 1, log the claimed input, submit one
    * prompt, and translate frames until the driver settles the outcome.
    */
+  /**
+   * Seed the session's protected system head: the v4 format requires the
+   * FIRST surface event of a log to be a system/message, and the native
+   * kernel appends its own mid-log (a permanent format violation) when it
+   * resumes a headless session. Writing the head in the first open step —
+   * before any other surface event — keeps the log valid for both kernels;
+   * a native resume later REPLACES this head (a legal operation) instead of
+   * appending an illegal one. Skipped when surface events already exist
+   * (pre-fix sessions): appending a head there would itself violate the
+   * invariant, so those stay pi-only.
+   */
+  private seedSystemHead(turn: number): void {
+    const hasSurface = this.session.snapshotEvents().some(event => SURFACE_EVENT_TYPES.has(event.type))
+    if (hasSurface) return
+    this.session.append('system/message', {
+      turn,
+      step: 1,
+      message: {
+        role: 'system',
+        content: [{ type: 'text', text: 'Session managed by the pi coding agent kernel.' }],
+        source: { kind: 'system-prompt' },
+        id: MessageId(randomUUID()),
+      },
+    }, { surfaceOp: 'append' })
+  }
+
   private async turn(): Promise<boolean> {
     if (this.phase.kind !== 'running') {
       throw new Error(`agent "${this.id}": turn without driver reservation`)
@@ -414,6 +445,7 @@ export class PiAgent implements Agent {
         this.cyclesSeen = 0
         this.callSeqs.clear()
         this.session.append('step/start', { turn, step: 1 })
+        this.seedSystemHead(turn)
         for (const message of claimed) {
           this.session.append('user/message', message, { surfaceOp: 'append' })
         }
