@@ -17,9 +17,9 @@
 pi RPC 执行器（chat-executor.js）、模型目录映射（model-catalog.js）、telemetry 扩展
 迁入新插件复用。
 
-**存储分工（已定）**：会话记录 = dsh v4 格式，`~/.dsh`（原生 UI 的历史/列表/搜索/resume 全靠它）；
-pi 模型/认证/设置 = `~/.pi`（pi 进程自读自写）；pi 自己的会话 JSONL 落在插件数据目录
-（dsh 日志是事实源，pi 文件仅为驱动 pi 进程所需）。
+**存储分工（2026-10-04 最终版，方案二）**：dsh 会话日志 = 唯一事实源；pi 会话文件 = 工作缓存
+（每次 pi 内核启动从日志无条件重建、dispose 删除，exporter 负责生成）；pi 模型/认证/设置 = `~/.pi`。
+内核可经 /kernel 命令在 pi 与原生之间切换，会话跨内核连续。详见 pi-only-persistence-assessment.md 第 9 节。
 
 ---
 

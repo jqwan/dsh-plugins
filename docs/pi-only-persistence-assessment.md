@@ -140,3 +140,22 @@ workbench 会话桥对 persistence 的校验走合成 list 后继续工作（需
   `persistence.open` 走内存空实现）。代价：侧栏列表空（只有活会话）。先验证重放质量。
 - **二期（完整）**：#1 list/stat 合成 + 正式替换 persistence 行 → 列表/搜索/导出全通。
 - 随时可回退：`persist: dual` 配置切回现行为（现状已在生产验证）。
+
+
+---
+
+## 9. 方案二实施（2026-10-04，commit 5ac44a1）
+
+用户拍板"单一真源 + 派生缓存"路线后，本文件的 pi-only 持久化机制（PiSessionPersistence /
+DSH_PI_ONLY）已被**拆除**（git 历史保留），取而代之：
+
+- **dsh 日志 = 唯一事实源**：jsonl 后端无条件回归。
+- **pi 文件 = 工作缓存**：exporter（dsh 事件 → pi JSONL）在每次 pi 内核 agent 启动时无条件重建，
+  dispose 时删除；缓存是日志的纯函数，无失效检测。
+- **/kernel 命令**：翻转 profile patch（agent-loop 行 + agent-default-model 路由），pi 服务
+  检测到原生内核持有 factory 槽时自动让位（仅保留 /kernel 命令），切换需重启 dsh。
+- 实测：pi → dsh → pi 完整切换循环，同一会话跨内核连续；老的原生会话直接 pi 可续
+  （搁浅问题消失）。
+- 已知边界：live reload 不生效（切换需重启）；pi TUI 无法稳定接手 dsh 会话（缓存会被重建覆盖）；
+  pi 时代早期 header 无 tools 字段导致原生 resume 首轮报 all-deferred（前向修复后新会话不再出现，
+  旧会话切回 pi 内核续写一轮即自愈）。
