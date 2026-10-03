@@ -220,7 +220,9 @@ export class PiAgentLoop extends Service implements AgentFactory {
       // kernel (plugin toggled off and back on within one process). The
       // native plugin fiber disposes ASYNCHRONOUSLY, so the claim below must
       // wait for the disposal to finish — otherwise setFactory races the
-      // freeing of the slot and pi stands down.
+      // freeing of the slot and pi stands down. Its FactoryOwnership sweeps
+      // the native-era agents, but their sessions stay mounted under the
+      // caller scopes (see publish), so the sidebar keeps every entry.
       const priorHandoff = nativeHandoffs.get(ctx.root)
       if (priorHandoff !== undefined) {
         nativeHandoffs.delete(ctx.root)
@@ -239,17 +241,20 @@ export class PiAgentLoop extends Service implements AgentFactory {
         this.factoryDisposer = undefined
         this.accepting = false
         console.error(`[pi-agent] kernel teardown (live agents: ${this.liveAgents.size})`)
-        // Sweep live agents: without this, UI-session agents survive the
-        // plugin unload as zombies (their lifecycle fibers belong to the
-        // caller's scope, not this plugin's), each keeping its pi RPC child.
+        // Sweep live agents: their lifecycle fibers belong to the callers'
+        // scopes, so the plugin unload alone would leave them (and their pi
+        // RPC children) half-orphaned, unable to wake. The sweep stops them
+        // cleanly; their sessions stay mounted under the caller scopes (see
+        // publish), so no session/disposed fires and the client keeps every
+        // sidebar entry. Reopening a swept session resumes it under the
+        // current kernel from the shared log.
         const disposals = [...this.liveAgents].map(dispose => dispose().catch((error: unknown) => {
           console.error(`[pi-agent] agent dispose failed: ${errorChain(error)}`)
         }))
         // Live handoff: the Plugins-page toggle disposed this fiber, so load
         // the REAL AgentLoop plugin on the ROOT scope while the slot is free.
         // A genuine cordis fiber resolves services like any host plugin (the
-        // hand-built-shim approach died on scope-context service reads); its
-        // own FactoryOwnership sweeps its agents when pi reclaims.
+        // hand-built-shim approach died on scope-context service reads).
         try {
           const fiber = ctx.root.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 4 })
           nativeHandoffs.set(ctx.root, () => fiber.dispose())
@@ -680,7 +685,9 @@ export class PiAgentLoop extends Service implements AgentFactory {
         await machine.whenIdle()
         await machine.disposeDriver()
         detachAgent?.()
-        detachSession?.()
+        // detachSession is intentionally NOT called: the session stays
+        // mounted under the caller's scope (see publish), so disposing the
+        // agent never emits session/disposed and the sidebar keeps the entry.
         await machine.scope.dispose()
       }
       await handle?.close().catch(() => {})
@@ -708,7 +715,14 @@ export class PiAgentLoop extends Service implements AgentFactory {
       signal: abort.signal,
       publish: async (source) => {
         assertLive()
-        detachSession = agent.ctx.sessions.enter(session)
+        // Mount the session under the CALLER's scope (the session
+        // controller's, process-lifetime), not the agent's own scope: an
+        // agent dispose (kernel switch, user close) then frees the RPC child
+        // and write handle while the session STAYS mounted — no
+        // session/disposed, so the client keeps the sidebar entry, and the
+        // next open resumes the same mounted session under the current
+        // kernel.
+        detachSession = ownerCtx.sessions.enter(session)
         detachAgent = loopCtx.agents.enter(agent, parentAgent)
         agent.ctx.sessions.announce(session)
         assertLive()
