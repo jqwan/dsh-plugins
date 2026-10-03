@@ -687,7 +687,6 @@ export class PiAgent implements Agent {
     // Shadow dsh's /compact: the stock command drives ctx.compaction over
     // the LLM runtime, which the pi kernel does not use (the catalog adapter's
     // stream() fails by design). Route compaction to pi instead.
-    try { (await import('node:fs')).appendFileSync('/tmp/pi-agent-debug.log', 'registering compact shadow\\n') } catch {}
     this.commands.register({
       name: 'compact',
       description: 'Compact the conversation context (pi kernel)',
@@ -698,7 +697,6 @@ export class PiAgent implements Agent {
           : { kind: 'error', text: 'pi is not running yet — send a message first' }
       },
     })
-    try { (await import('node:fs')).appendFileSync('/tmp/pi-agent-debug.log', 'compact shadow registered\\n') } catch {}
     if (commands.length > 0) {
       this.loopCtx.logger.info(`pi[${this.id}] registered ${commands.length} pi commands + compact shadow`)
     }
