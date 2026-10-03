@@ -41,6 +41,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-tools'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
+import { readProfilePatches, reconcileProfilePatches } from '@deepseek-ai/dsh-app-boot'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
@@ -151,14 +152,14 @@ interface PreparedAgent {
 
 /**
  * Per-process kernel handoff stash, keyed by the root context. When the
- * pi-agent plugin is disabled (Plugins-page row toggle), its teardown loads
- * the REAL AgentLoop plugin on the ROOT scope — a genuine cordis fiber, so
- * service resolution and agent lifecycles work exactly like the stock kernel
- * — and stashes that fiber's disposer here. Re-enabling the plugin runs the
- * disposer first (freeing the slot and sweeping native-era agents through the
- * loop's own FactoryOwnership), then claims the slot back.
+ * pi-agent plugin is disabled (Plugins-page row toggle), its teardown
+ * activates the native agent-loop ROW through one hot reconcile (a real
+ * host fiber owning the `agentLoop` service and the factory slot) and
+ * stashes a slot-freeing closure here. Re-enabling the plugin runs that
+ * closure first — freeing ONLY the slot, so the row keeps running with its
+ * live sessions — then claims the slot back.
  */
-const nativeHandoffs = new Map<Context, () => void>()
+const nativeHandoffFreeSlot = new Map<Context, () => void>()
 
 /**
  * Profile-patch marker written when the pi kernel hands the factory slot to
@@ -217,25 +218,16 @@ export class PiAgentLoop extends Service implements AgentFactory {
     ctx.effect(() => {
       console.error('[pi-agent] kernel active (factory owned)')
       // Reclaim the slot if a previous pi teardown handed it to the native
-      // kernel (plugin toggled off and back on within one process). The
-      // native plugin fiber disposes ASYNCHRONOUSLY, so the claim below must
-      // wait for the disposal to finish — otherwise setFactory races the
-      // freeing of the slot and pi stands down. Its FactoryOwnership sweeps
-      // the native-era agents, but their sessions stay mounted under the
-      // caller scopes (see publish), so the sidebar keeps every entry.
-      const priorHandoff = nativeHandoffs.get(ctx.root)
+      // kernel row (plugin toggled off and back on within one process). The
+      // handoff frees ONLY the factory slot — the native kernel row stays
+      // active, its open sessions keep running, and the sidebar never loses
+      // entries across toggles.
+      const priorHandoff = nativeHandoffFreeSlot.get(ctx.root)
       if (priorHandoff !== undefined) {
-        nativeHandoffs.delete(ctx.root)
-        void Promise.resolve(priorHandoff()).then(
-          () => this.claimKernel(ctx),
-          (error: unknown) => {
-            console.error(`[pi-agent] native fiber disposal failed: ${errorChain(error)}`)
-            this.claimKernel(ctx)
-          },
-        )
-      } else {
-        this.claimKernel(ctx)
+        nativeHandoffFreeSlot.delete(ctx.root)
+        priorHandoff()
       }
+      this.claimKernel(ctx)
       return () => {
         this.factoryDisposer?.()
         this.factoryDisposer = undefined
@@ -251,27 +243,19 @@ export class PiAgentLoop extends Service implements AgentFactory {
         const disposals = [...this.liveAgents].map(dispose => dispose().catch((error: unknown) => {
           console.error(`[pi-agent] agent dispose failed: ${errorChain(error)}`)
         }))
-        // Live handoff: the Plugins-page toggle disposed this fiber, so load
-        // the REAL AgentLoop plugin on the ROOT scope while the slot is free.
-        // A genuine cordis fiber resolves services like any host plugin (the
-        // hand-built-shim approach died on scope-context service reads).
-        try {
-          const fiber = ctx.root.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 4 })
-          nativeHandoffs.set(ctx.root, () => fiber.dispose())
-          Promise.resolve(fiber).catch((error: unknown) => {
-            console.error(`[pi-agent] native kernel fiber failed: ${errorChain(error)}`)
-          })
-          console.error('[pi-agent] native agent-loop plugin loaded on the root scope (plugin disabled)')
-          this.ctx.logger.info('pi-agent: factory handed to the native agent-loop (plugin disabled)')
-        } catch (error: unknown) {
-          console.error(`[pi-agent] native handoff failed: ${errorChain(error)}`)
-          this.ctx.logger.warn(`pi-agent: native handoff failed: ${errorChain(error)}`)
-        }
-        // Persist the handoff: the bundle patch hard-disables agent-loop, so
-        // a restart with the pi row still disabled must boot the native
-        // loop, not no kernel at all.
+        // Live handoff, single activation path: write the marker that
+        // re-enables the agent-loop row, then run one hot reconcile so the
+        // LOADER activates that row as the native kernel (a real host fiber,
+        // owning the service and the slot). Every later toggle leaves the
+        // row byte-identical, so no reconcile ever re-activates or collides
+        // with it again. Loading a private AgentLoop fiber here instead
+        // collided with the marker-driven row activation on re-enable.
+        // The reconcile itself must run OUTSIDE the disposer: it waits for
+        // every row fiber it manages to finish disposing — including THIS
+        // one — so calling it synchronously here deadlocks on itself.
         return Promise.allSettled(disposals).then(async () => {
           await this.writeHandoffMarker()
+          setTimeout(() => { void this.activateNativeKernelRow(ctx) }, 80)
         })
       }
     }, 'piAgent.kernel()')
@@ -315,6 +299,43 @@ export class PiAgentLoop extends Service implements AgentFactory {
 
   /** Disposer of the factory registration, set once the kernel effect claims the slot. */
   private factoryDisposer: (() => void) | undefined
+
+  /**
+   * Handoff target state after a plugin disable: the agent-loop ROW (enabled
+   * by the handoff marker) is the native kernel. The handoff disposer frees
+   * only its factory slot — the row keeps running, so its sessions continue
+   * and the next pi re-enable just takes the slot back.
+   */
+  private nativeHandoffFreeSlot = new Map<Context, () => void>()
+
+  /**
+   * Activate the native agent-loop kernel through the LOADER: one hot
+   * reconcile over the profile patches, with the handoff marker just
+   * written, so the row boots as a real host fiber (owning the `agentLoop`
+   * service and the factory slot) exactly as a restart with the marker would.
+   * A private handoff-loaded fiber here instead collided with this very
+   * row-activation on the next re-enable's reconcile.
+   */
+  private async activateNativeKernelRow(ctx: Context): Promise<void> {
+    try {
+      const profile = this.runtime.ctx.get('profileContext') as
+        | { dir?: string; patchPath?: string; home?: string; overlays?: unknown[] }
+        | undefined
+      if (profile === undefined) throw new Error('profileContext unavailable')
+      const patches = readProfilePatches('dsh', profile as never)
+      await reconcileProfilePatches(ctx.root, patches, 'dsh', ['agent-loop'])
+      const row = ctx.root.get('agentLoop') as AgentFactory | undefined
+      if (row === undefined) throw new Error('agent-loop row did not expose its service')
+      this.nativeHandoffFreeSlot.set(ctx.root, () => {
+        (ctx.root.agents as unknown as { factory?: unknown }).factory = undefined
+      })
+      console.error('[pi-agent] native agent-loop row activated (factory handed over)')
+      this.ctx.logger.info('pi-agent: factory handed to the native agent-loop row (plugin disabled)')
+    } catch (error: unknown) {
+      console.error(`[pi-agent] native row activation failed: ${errorChain(error)}`)
+      this.ctx.logger.warn(`pi-agent: native row activation failed: ${errorChain(error)}`)
+    }
+  }
 
   /**
    * Native adapter registry entries lifted out of `ctx.llm` while pi drives,
@@ -401,16 +422,30 @@ export class PiAgentLoop extends Service implements AgentFactory {
     let disposeFactory: (() => void) | undefined
     try {
       disposeFactory = ctx.agents.setFactory(this)
-    } catch (error: unknown) {
-      // Stand-down: someone else owns the slot — in practice the native
-      // loop booted from a stale handoff marker. The marker's job is only
-      // to keep a kernel bootable while the row is OFF; with the row ON it
-      // would otherwise pin the native kernel across every restart. Drop it
-      // so the next boot returns to pi (the running native stays until then).
-      console.error(`[pi-agent] claim failed: ${errorChain(error)} — clearing any stale handoff marker`)
-      this.ctx.logger.warn('pi-agent: factory slot is taken — pi kernel unavailable this session')
-      void this.clearHandoffMarker()
-      return
+    } catch (claimError: unknown) {
+      // Stand-down candidate: someone else owns the slot. The common case is
+      // the native kernel row that booted from the handoff marker (restart
+      // while the row was off). Take the slot from that dormant row live —
+      // it keeps running untouched, pi just becomes the factory — and clear
+      // the marker so the next boot returns to pi. The marker's job is only
+      // to keep a kernel bootable while the row is OFF.
+      const registry = ctx.root.agents as unknown as { factory?: unknown }
+      if (registry.factory === undefined) {
+        console.error(`[pi-agent] claim failed without an occupant: ${errorChain(claimError)}`)
+        void this.clearHandoffMarker()
+        return
+      }
+      registry.factory = undefined
+      try {
+        disposeFactory = ctx.agents.setFactory(this)
+        console.error('[pi-agent] took the factory slot from the dormant native kernel row (live takeover)')
+      } catch (retryError: unknown) {
+        // The slot stays free; the next claim (a toggle or restart) succeeds.
+        console.error(`[pi-agent] claim retry failed: ${errorChain(retryError)} (original: ${errorChain(claimError)})`)
+        this.ctx.logger.warn('pi-agent: factory slot is taken — pi kernel unavailable this session')
+        void this.clearHandoffMarker()
+        return
+      }
     }
     this.factoryDisposer = disposeFactory
     // Won the slot: pi is the kernel again, so a restart must boot pi —

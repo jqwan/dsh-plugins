@@ -39,3 +39,4 @@ overrides:
   '@deepseek-ai/dsh-user-approval': 'link:../deepseek-harness/packages/interaction/user-approval'
   '@deepseek-ai/dsh-tools': 'link:../deepseek-harness/packages/core/tools'
   '@deepseek-ai/dsh-agent-loop': 'link:../deepseek-harness/packages/core/agent-loop'
+  '@deepseek-ai/dsh-app-boot': 'link:../deepseek-harness/packages/boot/app-boot'
