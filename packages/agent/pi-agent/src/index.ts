@@ -228,10 +228,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
       // Sweep live agents: their lifecycle fibers belong to the callers'
       // scopes, so the plugin unload alone would leave them (and their pi
       // RPC children) half-orphaned, unable to wake. The sweep stops them
-      // cleanly; their sessions stay mounted under the caller scopes (see
-      // publish), so no session/disposed fires and the client keeps every
-      // sidebar entry. Reopening a swept session resumes it under the
-      // current kernel from the shared log.
+      // cleanly.
       const disposals = [...this.liveAgents].map(dispose => dispose().catch((error: unknown) => {
         console.error(`[pi-agent] agent dispose failed: ${errorChain(error)}`)
       }))
@@ -246,6 +243,12 @@ export class PiAgentLoop extends Service implements AgentFactory {
       // every row fiber it manages to finish disposing — including THIS
       // one — so calling it synchronously here deadlocks on itself.
       return Promise.allSettled(disposals).then(async () => {
+        // Unmount our sessions AFTER the agents are gone (their final events
+        // and projection state are settled) and hand the sidebar rows back
+        // to the client as cold entries. The freed ids let the native kernel
+        // cold-resume these sessions from the shared log instead of
+        // colliding with the store's id uniqueness.
+        this.unmountTrackedSessions()
         await this.writeHandoffMarker()
         setTimeout(() => { void this.activateNativeKernelRow(ctx) }, 80)
       })
@@ -500,20 +503,94 @@ export class PiAgentLoop extends Service implements AgentFactory {
   private switching = false
 
   /**
+   * Sessions this kernel keeps mounted in the live store, with their enter
+   * detach capabilities: pi-era publishes and native-era sessions adopted at
+   * a boot takeover. Read by the teardown unmount, which frees the ids so
+   * the next kernel cold-resumes from the shared log.
+   */
+  private sessionMounts = new Map<SessionId, { session: Session; detach: () => void }>()
+
+  /**
    * Re-mount a session orphaned by the retiring native kernel row (see the
    * adoption listener). session/disposed dispatches after the store entry is
    * gone, so enter() cannot collide; the fresh entry re-announces as
    * session/created and the client re-adds the sidebar row it just dropped.
    * The re-mounted session is agentless (its agent died with the row) — the
-   * next open resumes it under the current kernel from the shared log.
+   * next open resumes it under the current kernel from the shared log. The
+   * mount is tracked so a later pi disable unmounts it like our own.
    */
   private adoptOrphanedSession(session: Session): void {
     if (!this.switching) return
     try {
-      this.runtime.ctx.sessions.enter(session)
+      const detach = this.runtime.ctx.sessions.enter(session)
+      this.sessionMounts.set(session.id, { session, detach })
       this.runtime.ctx.sessions.announce(session)
     } catch (error: unknown) {
       console.error(`[pi-agent] session adoption failed for "${session.id}": ${errorChain(error)}`)
+    }
+  }
+
+  /**
+   * Unmount every tracked session and hand its sidebar row back to the
+   * client as a cold entry: capture the summary while the session is still
+   * mounted (projections are live), detach — the session controller
+   * broadcasts `api-session/removed` — then re-emit `api-session/added` with
+   * the captured summary so the client re-adds the row. Net client-visible
+   * effect: the row stays (agentless), and the store frees the id so the
+   * next kernel cold-resumes the session from the shared log instead of
+   * colliding with the id-uniqueness check on resume.
+   */
+  private unmountTrackedSessions(): void {
+    for (const [id, mount] of this.sessionMounts) {
+      this.sessionMounts.delete(id)
+      try {
+        // A stale entry: someone else detached (or replaced) the session —
+        // its removal was broadcast by whoever detached it.
+        if (this.runtime.ctx.sessions.get(id) !== mount.session) continue
+        const summary = this.captureSidebarSummary(mount.session)
+        mount.detach()
+        // The session controller's remote-event vocabulary: string-typed on
+        // the wire, and this package intentionally carries no dependency on
+        // the controller's Events augmentation — hence the local signature.
+        const announceAdded = this.runtime.ctx.emit as (name: string, payload: unknown) => void
+        announceAdded('api-session/added', summary)
+      } catch (error: unknown) {
+        console.error(`[pi-agent] session unmount failed for "${id}": ${errorChain(error)}`)
+      }
+    }
+  }
+
+  /**
+   * Build the `api-session/added` payload for a session about to leave the
+   * store — mirroring `ApiSessionList.summaryFor`'s wire shape for a row
+   * without a live agent. The projection block must be captured while the
+   * session is still mounted; after the detach it would read as a cache
+   * miss. The relay validates lossless JSON, so only plain wire views go out.
+   */
+  private captureSidebarSummary(session: Session): Record<string, unknown> {
+    const header = session.header
+    let block: { asOfSeq: number; values: Record<string, unknown> } | undefined
+    try {
+      const snapshot = this.runtime.ctx.sessionProjections.cachedSnapshot(session) as
+        | { asOfSeq: number; values: Record<string, unknown> }
+        | undefined
+      if (snapshot !== undefined && Object.keys(snapshot.values).length > 0) block = snapshot
+    } catch { /* serve the row without projections */ }
+    const metadata = block?.values['sessionListMetadata'] as
+      | { blank?: boolean; lastPromptAt?: number | null }
+      | undefined
+    return {
+      sessionId: session.id,
+      updatedAt: Math.max(header.createdAt, metadata?.lastPromptAt ?? 0),
+      agentAvailable: false,
+      running: false,
+      blank: metadata?.blank ?? session.seq === 0,
+      ...(header.parentSession === undefined ? {} : { parentSessionId: header.parentSession }),
+      ...(header.origin === undefined ? {} : { origin: header.origin }),
+      ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+      ...(block === undefined
+        ? {}
+        : { projections: { kind: 'sequenced', asOfSeq: block.asOfSeq, values: block.values } }),
     }
   }
 
@@ -820,7 +897,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     this.teardownSignals.push(onFactoryTeardown)
 
     let machine: PiAgent | undefined
-    let detachSession: (() => void) | undefined
+    let published = false
     let detachAgent: (() => void) | undefined
     let disposing: Promise<void> | undefined
     const machineReady = Promise.withResolvers<void>()
@@ -847,9 +924,18 @@ export class PiAgentLoop extends Service implements AgentFactory {
         await machine.whenIdle()
         await machine.disposeDriver()
         detachAgent?.()
-        // detachSession is intentionally NOT called: the session stays
-        // mounted under the caller's scope (see publish), so disposing the
-        // agent never emits session/disposed and the sidebar keeps the entry.
+        // A PUBLISHED agent's session stays mounted (tracked in
+        // sessionMounts) so the sidebar keeps the row after a normal close;
+        // the kernel-teardown unmount frees it later, re-adding the row as a
+        // cold entry. A FAILED publish rolls its fresh mount back here — the
+        // session was never announced, so the detach is silent.
+        if (!published) {
+          const mount = this.sessionMounts.get(id)
+          this.sessionMounts.delete(id)
+          if (mount !== undefined && this.runtime.ctx.sessions.get(id) === mount.session) {
+            try { mount.detach() } catch { /* single-shot; stale is fine */ }
+          }
+        }
         await machine.scope.dispose()
       }
       await handle?.close().catch(() => {})
@@ -877,21 +963,20 @@ export class PiAgentLoop extends Service implements AgentFactory {
       signal: abort.signal,
       publish: async (source) => {
         assertLive()
-        // Mount the session for the PROCESS lifetime, not the agent's own
-        // scope: an agent dispose (kernel switch, user close) then frees the
-        // RPC child and write handle while the session STAYS mounted — no
-        // session/disposed, so the client keeps the sidebar entry, and the
-        // next open resumes the same mounted session under the current
-        // kernel. Resolved through THIS plugin's declared injection, never
+        // Mount the session under THIS plugin's declared injection, never
         // the caller context: the mount carrier is owned by the sessions
-        // service itself (enter derives it from the service's own scope), so
-        // the caller's fiber ancestry is irrelevant — and reading
-        // caller-provided contexts through the inject guard breaks whenever
-        // the row graph shifts. A reused LIVE session is already entered and
-        // announced (its preserved mount survived a kernel switch); entering
+        // service itself, so the caller's fiber ancestry is irrelevant — and
+        // reading caller-provided contexts through the inject guard breaks
+        // whenever the row graph shifts. The mount is tracked in
+        // sessionMounts: the kernel teardown unmounts it (re-adding the
+        // sidebar row as a cold entry) so the NEXT kernel can cold-resume
+        // the session instead of hitting the store's id uniqueness. A
+        // reused LIVE session is already entered and announced (adopted at a
+        // boot takeover, or still mounted from an earlier pi era); entering
         // it again is rejected by the store, so only the agent attaches.
         if (!reuseLiveSession) {
-          detachSession = loopCtx.sessions.enter(session)
+          const detach = loopCtx.sessions.enter(session)
+          this.sessionMounts.set(id, { session, detach })
         }
         detachAgent = loopCtx.agents.enter(agent, parentAgent)
         if (!reuseLiveSession) {
@@ -899,6 +984,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
         }
         assertLive()
         await loopCtx.agents.announce(agent, source, abort.signal)
+        published = true
         assertLive()
         return { agent, dispose }
       },

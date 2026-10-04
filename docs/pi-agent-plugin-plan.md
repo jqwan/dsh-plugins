@@ -381,10 +381,13 @@ patch 文件（`hmr.watchConfig → refresh → reconcileProfilePatches`），�
 ### 14.1 机制（pi-agent/src/index.ts）
 
 - **关闭（pi → 原生，即时）**：kernel effect disposer 里 ① `disposeFactory()`
-  释放槽位；② 清算 `liveAgents`（防僵尸 pi 进程；会话挂载在进程级载体，
-  不发 `session/disposed`，侧边栏不掉行）；③ 写「交接标记」
-  （`- id: agent-loop disabled: false`）；④ deferred 80ms 热调和 → loader
-  激活原生行 → 原生 `setFactory` 认领。内核不中断，新会话即刻可用。
+  释放槽位；② 清算 `liveAgents`（防僵尸 pi 进程）；③ **卸载追踪的会话并回填
+  侧边栏**（`unmountTrackedSessions`：卸载前抓 summary 快照——header + 活投影
+  `cachedSnapshot`——→ `detach()` 触发 `session/disposed` → controller 广播
+  removed → 立即补发 `api-session/added` 带快照，客户端重新加行；store 释放
+  id，原生内核得以**冷恢复**这些会话而不是撞 id 唯一性）；④ 写「交接标记」
+  （`- id: agent-loop disabled: false`）；⑤ deferred 80ms 热调和 → loader
+  激活原生行 → 原生 `setFactory` 认领。内核不中断，新旧会话都即刻可用。
 - **开启（原生 → pi）**：
   - 无标记（正常 pi 启动）：构造期直接 `setFactory` 认领。
   - 有标记 + 启动期（uptime < 20s）：**绝不立即认领**——marker 引导的原生行
@@ -392,7 +395,8 @@ patch 文件（`hmr.watchConfig → refresh → reconcileProfilePatches`），�
     `loader.await()` 之后：原生行已干净认领 → boot 接管（清 marker → 热调和
     退役原生行 → pi 认领 freed 槽位），一次重启完成切换。接管窗口用
     `switching` + root 级 `session/disposed` 观察者**收养**被退役行孤儿化的
-    会话（重新 enter+announce，客户端 removed→added，行不丢）。
+    会话（重新 enter+announce 并入 `sessionMounts` 追踪，客户端
+    removed→added，行不丢）。
   - 有标记 + 运行中开启（uptime ≥ 20s）：**惰性**——保留 marker（文件继续
     如实描述运行中的原生行，HMR 不会动手），日志提示「重启 dsh 切换到 pi」。
     下次重启走上面的 boot 接管。
@@ -401,28 +405,34 @@ patch 文件（`hmr.watchConfig → refresh → reconcileProfilePatches`），�
   原生内核。pi 认领成功后清除标记，恢复 bundle 语义。
 - **模型列表跟随内核**：pi 目录 adapter 只在真正拥有槽位时注册
   （`kernelOwned` 门控）；惰性 pi 保持原生列表。
+- **会话挂载追踪（`sessionMounts`）**：pi 发布的会话与收养的原生会话都记
+  `{ session, detach }`。单个 agent 正常 dispose **不**卸载（侧边栏保行）；
+  只有 kernel teardown 统一卸载。发布失败的回滚在 agent dispose 里静默
+  detach（未 announce，无广播）。
 
 ### 14.2 状态矩阵（实测）
 
 | 操作 | 结果 |
 |---|---|
 | pi 开机自启（无标记） | pi 认领，pi 内核 |
-| 行开关关闭（运行中） | 原生行热激活接管，侧边栏稳定，会话不中断 |
+| 行开关关闭（运行中） | 原生行热激活接管；会话卸载+行回填，侧边栏稳定；**新旧会话原生下均可冷恢复续聊** |
 | 行开关开启（运行中，原生服役） | pi 惰性 + 保留标记，原生继续服务，侧边栏稳定 |
 | 关闭后重启（有标记） | 原生认领，pi 行不加载 |
 | 开启后重启（有标记） | 原生先认领（required），pi deferred boot 接管，一次重启完成 |
 
 ### 14.3 已知边界
 
-- **会话挂载与跨内核 resume**：pi 会话挂载在进程级载体（侧边栏跨切换稳定），
-  但 store 对同 id 唯一——关闭 pi 后**不重启**直接在原生内核打开 pi 生代会话，
-  原生 resume 会在 `enter()` 撞唯一性检查（上游设计，原生代码不可改）。
-  按提示重启即恢复（重启后 store 重建，从持久层冷恢复，dsh 日志唯一事实源）。
-  pi 侧同进程 resume 已做活会话复用（`resumeWith` 检测 mounted 会话直接
-  围绕它重建驱动，跳过 enter/announce）。
+- **跨内核 resume 已修**（卸载+回填方案，2026-10-04）：关闭插件即卸载全部
+  追踪会话并补发 added，原生内核对 pi 生代会话走冷恢复（`resumeWith` 的活
+  会话复用路径保留给收养场景：boot 接管后收养的会话仍挂载，pi 直接围绕它
+  重建驱动）。
+- 切换瞬间**打开中的会话视图**仍需重开（agent 随切换退役，客户端 live 绑定
+  断开，composer 显示 unavailable）；侧边栏行不丢，重开即冷恢复，历史无损。
 - boot 接管窗口（启动后数秒）与客户端自动重开竞速：若客户端在原生行存活的
-  窗口内 resume 了会话，接管时由收养观察者保行；该会话的打开视图仍需重开
-  （agent 已随行退役，历史无损）。
+  窗口内 resume 了会话，接管时由收养观察者保行；该会话的打开视图仍需重开。
+- 补发的 `api-session/added` 是 session-controller 的内部远程事件，summary
+  形状（header 字段 + `cachedSnapshot` 投影块）属于 dsh 实现细节——dsh 升级
+  若改 summary/投影 wire 格式，这里要跟一次（`captureSidebarSummary` 单点）。
 - 切换后模型/命令列表按当前内核展示；`/goal` 等原生命令在 pi 下仍是空转
   （待 pi extension 桥接，未实施）。
 
