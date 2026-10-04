@@ -21,11 +21,12 @@ function run(command, args, allowFailure = false) {
 
 // dsh CLI 以自身 cwd 解析相对路径（经 DSH_BIN 包装后 cwd 通常是 harness 仓库），
 // add 一律传绝对路径，保证任何包装方式下都指向本仓库的包目录。
-// 授权对（authorization-web + client-ui-authorization）已停止接入：0.2.0 宿主下
-// client 端的 sessions/uiSession 服务注入激活失败；包源码保留在仓库里，需要时手动装回。
+// 已停止接入的插件（remove 保留用于清理旧 profile，包源码都在仓库里）：
+// - 授权对（authorization-web + client-ui-authorization）：0.2.0 宿主下
+//   client 端的 sessions/uiSession 服务注入激活失败。
+// - workbench 对（workbench-web + client-ui-workbench）：UI 融合方向已退役，
+//   转做 pi-agent 内核插件、UI 全原生（2026-10-04）。
 const packages = {
-  workbenchWeb: resolve(root, 'packages/task/workbench-web'),
-  clientUiWorkbench: resolve(root, 'packages/client/ui-workbench'),
   piAgent: resolve(root, 'packages/agent/pi-agent'),
 }
 
@@ -33,7 +34,5 @@ await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-clie
 await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-authorization-web'], true)
 await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-client-ui-workbench'], true)
 await run(dsh, ['plugin', '--profile', profile, 'remove', '@deepseek-ai/dsh-workbench-web'], true)
-await run(dsh, ['plugin', '--profile', profile, 'add', packages.workbenchWeb])
-await run(dsh, ['plugin', '--profile', profile, 'add', packages.clientUiWorkbench])
 await run(dsh, ['plugin', '--profile', profile, 'add', packages.piAgent])
-console.log(`Installed workbench + pi-agent plugins into profile ${profile}.`)
+console.log(`Installed pi-agent plugin into profile ${profile}.`)
