@@ -44,12 +44,12 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import { readProfilePatches, reconcileProfilePatches } from '@deepseek-ai/dsh-app-boot'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
-import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
-import { PiAgent, type PiAgentOptions } from './pi-agent.ts'
+import { PiAgent, ensureMcpBridgeConfig, resolveBridgeShimPath, type PiAgentOptions } from './pi-agent.ts'
 import { exportPiSession } from './exporter.ts'
 
 export { exportPiSession }
+export { ToolBridgeServer } from './bridge.ts'
 import { PiCatalogAdapter } from './llm-adapter.ts'
 import { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
 import { inboxProjectionDefinition } from './inbox.ts'
@@ -162,7 +162,7 @@ interface PreparedAgent {
 const HANDOFF_MARKER = '# pi-agent handoff: keep the native agent-loop bootable while pi is off'
 
 export class PiAgentLoop extends Service implements AgentFactory {
-  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval', 'tools']
+  static inject = ['agents', 'sessions', 'llm', 'sessionProjections', 'commands', 'approval', 'tools', 'systemPrompt', 'agentPresets', 'subagents']
 
   /** Runtime schema for declarative agents. */
   static Config = z.object({
@@ -201,6 +201,15 @@ export class PiAgentLoop extends Service implements AgentFactory {
       agents: config.agents ?? [],
     }
     this.runtime = { ctx }
+    // Tool bridge gate (DSH_PI_TOOL_BRIDGE=1, default off until the ambient
+    // pi startup hang windows are understood): while on, register the MCP
+    // shim in ~/.pi/agent/mcp.json so pi's builtin MCP client spawns it; the
+    // per-agent env injection (DSH_TOOL_BRIDGE_SOCKET) below is what actually
+    // arms each session's bridge.
+    if (process.env.DSH_PI_TOOL_BRIDGE === '1') {
+      const shim = resolveBridgeShimPath()
+      if (shim !== undefined) ensureMcpBridgeConfig(shim)
+    }
     // Kernel coexistence: the native AgentLoop kernel row owns the factory
     // slot whenever this plugin is disabled (the handoff marker boots it);
     // disabling pi hands the kernel over LIVE, enabling pi takes effect on
@@ -943,7 +952,7 @@ export class PiAgentLoop extends Service implements AgentFactory {
     this.liveAgents.add(dispose)
 
     ownerCtx.effect(function* () {
-      machine = new PiAgent(loopCtx, id, options, session, loopCtx.commands, loopCtx.get('approval') as ApprovalService, () => loopCtx.tools.schemas())
+      machine = new PiAgent(loopCtx, id, options, session, loopCtx.get('approval') as ApprovalService, () => loopCtx.tools.schemas(), loopCtx.tools)
       machineReady.resolve()
       yield machine.scope.rawDispose
     }, `piAgent.lifecycle(${id})`)

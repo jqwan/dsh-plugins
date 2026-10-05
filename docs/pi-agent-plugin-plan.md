@@ -241,16 +241,29 @@ piAdapter.stream()               → throw（v1；若 session-title-llm 走会�
 
 ---
 
-## 7. 命令装配
+## 7. 命令装配（2026-10-04 落定：构造期 + agent scope）
 
-- 创建 agent 时在 `agent.ctx` 上（per-agent scoped layer）注册 pi 命令集：
-  RPC `get_commands` → 每个 `{name, description}` 一个
-  `CommandDefinition { name, description, handler: → pi RPC {type:'command', name, args} }`。
-  scoped 同名自动遮蔽全局命令。
-- 需遮蔽的 dsh 失效命令（permission/goal/plan 等）：同名 scoped 注册礼貌报错版本
-  （"由 pi 内核管理"）。实现时对照 `ctx.commands.list(agent)` 实测清单决定。
+- PiAgent 构造（会话打开）时即 fire-and-forget 注册：`driver.getCommands()`
+  （自拉起 pi 进程）→ 每个 `{name, description}` 一个 `CommandDefinition`
+  注册到 **`this.ctx.commands`（agent scope）**。打开即显示，无需先对话。
+- 注册必须走 agent scope、绝不能走插件根 ctx：根 ctx 的 traceable 代理
+  `scopeOf` 为 undefined，注册落入**全局层**——所有会话可见、第二个会话
+  起重名注册全部失败、handler 闭包错绑首个会话（跨会话串话）、且与 dsh
+  全局 /compact 碰撞。已用真实 cordis/commands 包复现并验证修复。
+- scoped 同名自动遮蔽全局命令；注册随 scope 卸载（关会话/关插件）自动
+  消失并广播 `commands/change`，客户端目录按会话重拉。
+- 需遮蔽的 dsh 失效命令（permission/goal/plan 等）：同名 scoped 注册礼貌
+  报错版本（"由 pi 内核管理"）。实现时对照 `ctx.commands.list(agent)` 实测清单决定。
 - 内核无关命令（/export 等）保持全局原生实现，不遮蔽。
-- /compact：映射 pi 的 compact RPC（若 v1 无对应命令则先遮蔽）。
+- /compact：scoped 影子（带 stock definitionId 继承内置脸）映射 pi 的 compact RPC；
+  **压缩事件双向落账（2026-10-04）**：pi `compaction_start/end` 帧 → dsh
+  `compaction/start` + `compaction/summary` + 表面替换 checkpoint user/message
+  （`surfaceOp: replace`，checkpoint source 带 compactionId）+ `compaction/end`——
+  原生压缩卡片/usage/锁语义全生效；span 由 dsh 侧选（保护 system 头 + 保留最后一个
+  user message 起的尾轮），与 pi 的选择算法不同步（极短会话可能 pi 压了而 dsh 无记录，
+  重建后回全长，不丢数据）；exporter 把 `compaction/summary` 映射回 pi `compaction`
+  条目（firstKeptEntryId = 阴影范围后首个导出条目）、跳过 checkpoint 用户消息
+  （防摘要双份）——压缩跨重启持久，重建保持裁剪形状。
 
 ---
 
@@ -335,12 +348,12 @@ packages/agent/pi-agent/
 | P2 补充 | cancel→abort | Stopped 状态、中断内容保留、会话可用 | ✅ 已验证 |
 | P3 模型闭环 | catalog adapter；UI 选模型→set_model；路由过滤 | 选择器列出 pi 模型并切换 | ✅ 已验证（DeepSeek 组出现） |
 | P4 resume | interrupted closers；pi 会话文件续跑 | 重启后带全上下文继续 | ✅ 已验证（缓存命中 74%） |
-| P5 命令 | get_commands → agent 作用域命令 | 命令进原生补全 | ✅ 已验证（43 条，gentle-shell 全套）；per-agent 遮蔽暂缓（单例 runtime 限制） |
+| P5 命令 | get_commands → agent scope 命令（构造期注册） | 打开会话即显示 pi 命令；/compact 影子生效 | ✅ 已验证（43 条，gentle-shell 全套）；2026-10-04 修正为 agent scope 注册（全局层路径有跨会话串话/重名碰撞，已复现并修复） |
 | P6 审批桥 | extension confirm → ApprovalService.request | 原生审批卡片 | ✅ 已接线（无活跃扩展触发，路径按契约实现） |
 | P8a 一次性补全 | adapter stream() 经 throwaway pi | stock /compact、LLM 标题可用 | ✅ 已验证（"Compacted 24 history items"） |
 | P8b 流式 | message_start/update → assistant-stream 帧 | 原生流式渲染 | ✅ 已接线（协议与原生一致；deepseek-flash 过快未目视确认中间态） |
 | P7 subagent | 子会话翻译（pi 侧 gentle-shell 已可用） | 原生面包屑 | ⏭ 下一阶段（工厂侧 parentAgent/meta 管道已就绪） |
-| P8c 其余打磨 | steer/inject 映射、compaction 事件映射、失败重试 | 体验接近原生 | ⏭ 后续 |
+| P8c 打磨 | compaction 事件映射 ✅（2026-10-04：帧→dsh 压缩词汇 + exporter 回映，压缩卡片/持久化生效）；steer/inject 映射 | 体验接近原生 | ⏭ 余项 |
 
 每阶段独立提交；P1 完成即架构验证通过。
 
@@ -450,3 +463,82 @@ role/content/source kind system-prompt/surfaceOp append）；此后原生 resume
   可离线修复（剔除中段 system/message 后重压缩）。
 - resume 失败会把会话从 workspace.json 的 sessionIds 索引移除（侧栏消失）；修复文件后需
   手工把 session id 加回对应工作区的索引。侧栏列表来自该显式索引，不是目录扫描。
+
+---
+
+## 15. 通用工具桥（**MCP 路线**，2026-10-05 定稿）
+
+**演进**：初版 = 自定义 pi 扩展（进程内 jiti 加载）+ 自定义 socket 协议。0.84/0.85 上扩展
+从未在用户环境成功连上（疑似 jiti/扩展加载缺陷，且存在约 30-60 分钟的间歇性启动挂死窗口——
+所有 pi rpc 启动都挂、含无扩展场景、自恢复、未定位，见 15.2）。**现版（MCP 路线）把 pi 侧
+脆弱的进程内扩展整体移除**，改用 pi 1.0.x 内置 MCP 客户端 + 零依赖 MCP shim：
+
+```
+pi 模型 → pi 内置 MCP 客户端（官方维护）→ MCP shim（stdio，零依赖，回调状态机）
+  → unix socket（env DSH_TOOL_BRIDGE_SOCKET 继承自 pi 进程）→ ToolBridgeServer（不变）
+  → ctx.tools.execute({agent: PiAgent}) → 原生审批/沙箱/权限 → 结果经 MCP 返回
+```
+
+- **shim**（`bridge/dsh-mcp-shim.mjs`，随包分发 `lib/bridge/`）：MCP stdio 服务器，实现
+  initialize（回显客户端版本）/tools/list（dsh schema 直作 inputSchema）/tools/call（失败
+  映射 isError 结果，注册表抛错同）/notifications/cancelled（→ socket cancel → AbortController）。
+  **纯回调状态机，无 async/await**——排查中发现 promise 链在 socket 回调 + resolve 交互下
+  会进入微任务饥饿式自旋（99% CPU、事件循环停止调度新回调，未定位到根因，回调式绕开）。
+  无 socket env（用户直跑 pi）时工具列表为空，完全惰性。
+- **配置**：插件构造时（gate on）幂等写 `~/.pi/agent/mcp.json` 的 `dsh-tools` 条目
+  （`{command: node, args: [shim]}`），保留用户其他服务器。
+- **socket 协议与 ToolBridgeServer 完全不变**（list/execute/cancel 帧、per-PiAgent socket、
+  disposeDriver 清算）。
+- **门控**：`DSH_PI_TOOL_BRIDGE=1`（默认关）——gate 同时控制 ①插件启动时写 mcp.json 配置
+  ②driver 向 pi 进程注入 socket env。gate 关 = 无配置无注入 = 桥完全不存在。
+- **证据**：shim 协议 smoke 全绿（initialize/list/call/isError 映射/取消中继）；真 pi 1.0.2
+  e2e 全绿（内置 MCP 客户端 spawn shim → 模型调用 mcp__dsh_tools__dsh_echo → 宿主以正确
+  agent 归因执行 → 结果回填 → agent_end）。
+- 工具命名：`mcp__dsh-tools__<toolname>`（pi 对 MCP 工具加服务器前缀）。隔离 agent 目录测试
+  用 `PI_CODING_AGENT_DIR` env（getAgentDir 的覆盖点）。
+- **归因修复（2026-10-05 用户实测反馈后）**：桥执行包 `agents.withInitiator(agent, …)`——
+  goal 工具的守卫读 `agents.currentInitiator()`（AsyncLocalStorage），原生内核里工具调用在
+  driver 续体内所以满足，socket 回调是新异步上下文必须显式重建边界；subagent fork 报
+  "systemPrompt without inject" = PiAgent scope 链缺 inject 声明，inject 补
+  systemPrompt/agentPresets/subagents（均在 base/web-app 组合中常驻）。
+- **日志格式污染修复（同日第二轮实测）**：pi 的 codemode 内置扩展会把工具调用扇出成嵌套
+  子派发（toolCallId `parent/1`），translator 原样入账 → v4 校验器拒载（嵌套 tool/call
+  需要"已宣告"的复合生命周期，pi 帧不带）。修复：translator 跳过 callId 含 `/` 的
+  tool_execution_start/end 帧（父子成对跳过保持配平；父级结果已含嵌套输出）。已损坏日志
+  离线修复法：zstd 解压 → 过滤 callId/toolCallId 含 `/` 的 tool/call+tool/result 对 →
+  重压缩（本次 11 对，备份留存）。
+- **pre-step 生命周期补齐（同日）**：子 agent 的 durable descriptor 由 in-process driver
+  挂在子 agent 的 `agent/pre-step` 瀑布上，PiAgent 从不发射 → 子会话永远没有
+  `subagent/descriptor` → 打开子会话报 "descriptor is corrupt"（投影把"无描述符"折叠为
+  null）。修复：PiAgent.turn 在 step/start 后按原生语义发射 pre-step 瀑布（默认
+  enter+claimed；reject 视为空转结束）。
+
+**15.2 pi 升级 1.0.2（2026-10-05）**：依赖 ^0.84.4 → ^1.0.2（0.86/0.87/0.99/1.0 跨越），
+构建零错误，RPC 协议面未变。1.0.2 改善：桥扩展在用户环境**能连上宿主**了（0.84 从未连上）；
+健康窗口内全场景（桥+resume+prompt→agent_end）可过。**未解之谜——间歇性启动挂死窗口**：
+约 30-60 分钟的时段内**所有** pi rpc 启动都挂（含无扩展的 fresh/resume），自恢复；挂死期
+无任何网络连接（preload 抓证）、主线程空转 processTimers、Startup Timings 显示 main() 30ms
+跑完后无输出（挂点在 runRpcMode 内部 await）；对 inspector 信号/CDP pause 也无响应。
+怀疑环境级（代理/文件锁/系统态），无法复现定位。桥默认关闭的决定维持：挂死影响所有启动
+路径，与桥无因果（无扩展也挂）；窗口机制查明后再评估默认开启。
+
+
+目标：让 pi 内核用上 dsh 注册表的**全部**工具（subagent/goal/bash/web/…含未来插件工具），
+不做逐个适配。两个进程内组件经私有 unix-socket JSONL 通道协作：
+
+- **宿主侧 `ToolBridgeServer`**（`src/bridge.ts`，per-PiAgent 一个）：监听
+  `~/.dsh/pi-agent/<id>.bridge.sock`；`list` 回 agent 作用域 wire schemas（与请求锚点同源）；
+  `execute` 转 `ctx.tools.execute({name, arguments, agent: PiAgent, signal})`——agent 自填
+  （ToolExecutionInput.agent 本就是调用方填的），审批卡片/权限/沙箱全走原生管线；`cancel`
+  映射 AbortController；连接断开即清算在途调用；disposeDriver 兜底 stop。
+- **pi 侧 `bridge/pi-dsh-bridge.mjs`**（零依赖扩展，async 工厂）：读 env
+  `DSH_TOOL_BRIDGE_SOCKET` → 连接 → 拉 schemas → `pi.registerTool`（dsh JSON Schema 直接
+  作 TypeBox 参数——pi 对无 Kind 符号的纯 JSON Schema 有专门兼容分支）→ execute 转发 +
+  signal abort → `cancel` 帧。桥故障 = 工具缺失，会话其余功能不受影响（优雅降级）。
+- （历史，已废弃）初版扩展路线的接线：spawn 时 `--extension <file>` + env 注入；pi loader
+  对 --extension 要求文件而非目录、目录内每个文件都会被当扩展加载、`--extensions` 复数是
+  update 子命令专属。被 MCP 路线取代后，旧扩展文件与 --extension 注入均已删除。
+
+已知边界：工具清单在扩展加载时快照（`tools/change` 动态同步未做）；结果只取 text 块
+（图片降级占位）；`tools.execute` 抛错映射为 pi 工具失败文本。实测要点：pi 会话发消息让它
+调 `dsh_read_file`（或任一 dsh 工具名）→ 原生审批卡片 → 批准 → 结果回填。

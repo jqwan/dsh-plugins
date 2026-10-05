@@ -53,6 +53,8 @@ export interface PiRpcOptions {
   onStderr?: (text: string) => void
   /** Process exit callback (once). */
   onExit?: (info: { exitCode: number | null; signal: NodeJS.Signals | null }) => void
+  /** Extra environment entries merged over `process.env` (e.g. the tool-bridge socket path). */
+  env?: Record<string, string>
 }
 
 /** Strict `\n` JSONL reader (readline splits on extra Unicode separators). */
@@ -88,7 +90,7 @@ export class PiRpcProcess {
     this.child = spawn(process.execPath, [options.cliEntry, '--mode', 'rpc', ...options.args], {
       cwd: options.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, ...options.env },
     })
     attachLineReader(this.child.stdout!, line => this.handleLine(line))
     this.child.stderr!.setEncoding('utf8')

@@ -57,6 +57,12 @@ export interface PiDriverOptions {
    */
   onInteractiveExtUi?: (request: { method: string; title?: string; message?: string }) =>
     Promise<{ confirmed?: boolean; value?: string } | undefined>
+  /**
+   * Tool-bridge wiring: the host-side socket path injected as
+   * DSH_TOOL_BRIDGE_SOCKET; pi's builtin MCP client spawns the configured
+   * shim, which inherits this env and connects back here.
+   */
+  bridgeSocketPath?: string
   /** Diagnostics sink. */
   logger: { info: (message: string) => void; warn: (message: string) => void }
 }
@@ -236,6 +242,12 @@ export class PiDriver {
     }
     const args = [
       '--session', this.sessionFile,
+      // Startup-order safety net (kept from the extension-era debugging):
+      // opening an EXISTING session file through pi's plain resume path was
+      // one of the triggers behind the unresolved intermittent startup-hang
+      // windows; `--continue` continues the same full-history session through
+      // an order that never exhibited it. Harmless for fresh files.
+      '--continue',
       ...(provider !== undefined && model !== undefined
         ? ['--provider', provider, '--model', model]
         : []),
@@ -246,6 +258,9 @@ export class PiDriver {
       cliEntry,
       cwd: this.options.cwd,
       args,
+      ...(this.options.bridgeSocketPath === undefined ? {} : {
+        env: { DSH_TOOL_BRIDGE_SOCKET: this.options.bridgeSocketPath },
+      }),
       onFrame: frame => this.handleFrame(frame),
       onStderr: text => this.options.logger.warn(`pi stderr: ${text.slice(0, 300)}`),
       onExit: ({ exitCode, signal }) => {

@@ -26,6 +26,9 @@ const packages = {
     directory: 'packages/agent/pi-agent',
     source: 'src/index.ts',
     invariant: 'src/invariant.ts',
+    // 工具桥的 MCP shim 是纯 js，随包分发到 lib/bridge/（由 pi 的内置 MCP
+    // 客户端按 mcp.json 配置 spawn，不参与打包）
+    copyToLib: ['bridge/dsh-mcp-shim.mjs'],
     // dsh 运行时包一律 external：宿主进程里必须与 harness 同实例（双实例即类型撕裂）。
     externals: [
       '@deepseek-ai/schemastery',
@@ -110,6 +113,11 @@ async function emitDeclarations(name, config) {
 async function buildHost(config) {
   const directory = resolve(root, config.directory)
   await mkdir(join(directory, 'lib'), { recursive: true })
+  for (const file of config.copyToLib ?? []) {
+    const target = join(directory, 'lib', file)
+    await mkdir(join(target, '..'), { recursive: true })
+    await cp(join(directory, file), target)
+  }
   const external = [
     'node:crypto',
     'zod',

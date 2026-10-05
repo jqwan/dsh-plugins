@@ -8,13 +8,19 @@
  * detection.
  *
  * Mapping (inverse of replay.ts, lossless where pi's format allows):
- *   user/message        → message(user)
+ *   user/message        → message(user) — compact-checkpoint sources skipped
+ *                          (the compaction entry already carries the summary;
+ *                          emitting both would duplicate it in context)
  *   assistant/message    → message(assistant) — stopReason inferred from
  *                          tool-call blocks; arguments parsed back to objects
  *   tool/result          → message(toolResult) — toolName recovered from the
  *                          paired tool/call event
  *   request/header       → model_change (+ thinking_level_change) on route change
  *   session/title        → session_info(name)
+ *   compaction/summary   → compaction entry (firstKeptEntryId = the exported
+ *                          entry for the first surface event after the
+ *                          shadowed range, so pi's rebuilt context keeps the
+ *                          recorded retained tail)
  *   everything else      → skipped (boundaries, prompts, approvals, …)
  *
  * @module @deepseek-ai/dsh-pi-agent/exporter
@@ -118,14 +124,21 @@ export function exportPiSession(
   let lastRoute: { provider: string; model: string } | undefined
   let lastThinking: string | undefined
   const toolNames = new Map<string, string>()
+  /** Exported pi entries by their producing event's seq, in log order. */
+  const written: Array<{ seq: number; id: string }> = []
 
   for (const raw of events) {
     // 'model/selection' / 'session/title' merge into SessionEventMap from
     // other packages; treat the discriminant loosely for the exporter.
-    const event = raw as unknown as { type: string; time: number; data: Record<string, unknown> }
+    const event = raw as unknown as { type: string; seq: number; time: number; data: Record<string, unknown> }
     const data = event.data
     switch (event.type) {
       case 'user/message': {
+        // The compaction checkpoint user message is the surface replacement
+        // for a recorded compaction; the compaction entry below already
+        // carries the summary into pi's context — skip to avoid duplicates.
+        const source = data.source as { kind?: string } | undefined
+        if (source?.kind === 'compact-checkpoint') break
         const text = dshText(data.content)
         if (text === '') break
         const entry: PiOutEntry = {
@@ -137,6 +150,7 @@ export function exportPiSession(
         }
         lines.push(JSON.stringify(entry))
         parentId = entry.id
+        written.push({ seq: event.seq, id: entry.id })
         break
       }
       case 'assistant/message': {
@@ -165,6 +179,7 @@ export function exportPiSession(
         }
         lines.push(JSON.stringify(entry))
         parentId = entry.id
+        written.push({ seq: event.seq, id: entry.id })
         break
       }
       case 'tool/call': {
@@ -192,6 +207,33 @@ export function exportPiSession(
         }
         lines.push(JSON.stringify(entry))
         parentId = entry.id
+        written.push({ seq: event.seq, id: entry.id })
+        break
+      }
+      case 'compaction/summary': {
+        // A pi compaction recorded by the translator: emit pi's native
+        // compaction entry so the rebuilt cache keeps the pruned context.
+        // firstKeptEntryId must name an entry on the parent chain BEFORE this
+        // entry — the first exported entry past the shadowed range (the
+        // recorded retained tail); falling back to the last written entry
+        // keeps at least one verbatim exchange when the tail exported nothing.
+        const range = data.shadowedRange as { end?: unknown } | undefined
+        const shadowedEnd = typeof range?.end === 'number' ? range.end : undefined
+        const summaryText = dshText(data.summary)
+        if (summaryText === '') break
+        const kept = shadowedEnd !== undefined ? written.find(item => item.seq > shadowedEnd) : undefined
+        const entry: PiOutEntry = {
+          type: 'compaction',
+          id: randomUUID().slice(0, 8),
+          parentId,
+          timestamp: timestamp(event.time),
+          summary: summaryText,
+          firstKeptEntryId: kept?.id ?? written[written.length - 1]?.id ?? header.id,
+          tokensBefore: typeof data.shadowedTokenCount === 'number' ? data.shadowedTokenCount : 0,
+        }
+        lines.push(JSON.stringify(entry))
+        parentId = entry.id
+        written.push({ seq: event.seq, id: entry.id })
         break
       }
       case 'request/header': {

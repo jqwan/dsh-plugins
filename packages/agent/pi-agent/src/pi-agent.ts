@@ -23,6 +23,7 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  PreStepDecision,
 } from '@deepseek-ai/dsh-agent'
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, LlmCallConfig, TokenUsage, ToolCallId, UserMessage } from '@deepseek-ai/dsh-llm'
@@ -38,16 +39,32 @@ import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Session, SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
+import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import { mkdir, writeFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { ToolBridgeServer } from './bridge.ts'
 
 /** Surface event types whose log order the v4 format guards. */
 const SURFACE_EVENT_TYPES = new Set(['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result'])
+
+/**
+ * Checkpoint framing replicated from compaction-basic's summarizer (not
+ * exported there): the preamble the native pipeline wraps every compaction
+ * summary in, plus the tag pair consumers recognize.
+ */
+const CHECKPOINT_PREAMBLE =
+  'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
 import type { Context } from '@deepseek-ai/cordis'
-import type { CommandInvocation, CommandRuntime, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { CommandId, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
+import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
+import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import type {} from '@deepseek-ai/dsh-commands'
 import { PiInbox } from './inbox.ts'
 import { PiDriver, type DriverTurnOutcome } from './driver.ts'
@@ -71,6 +88,65 @@ function abortedCancelCause(signal: AbortSignal): AgentCancelCause | undefined {
       return { kind: 'hook', reason: cause.reason }
     default:
       return { kind: 'user' }
+  }
+}
+
+/**
+ * The per-agent bridge socket path under the pi data dir, or undefined when
+ * the bridge is disabled. DEFAULT OFF (env DSH_PI_TOOL_BRIDGE=1 enables):
+ * kept behind the gate until the ambient pi startup hang windows are
+ * understood — they broke every pi launch regardless of the bridge.
+ *
+ * MCP route (2026-10-05, replaces the in-process extension): pi's builtin
+ * MCP client spawns the packaged shim (see ensureMcpBridgeConfig) and the
+ * shim finds this socket via the inherited DSH_TOOL_BRIDGE_SOCKET env —
+ * pi's stdio transport inherits the parent environment.
+ */
+/** The packaged MCP shim file, or undefined when missing (dev runs from src). */
+export function resolveBridgeShimPath(): string | undefined {
+  try {
+    const shim = fileURLToPath(new URL('./bridge/dsh-mcp-shim.mjs', import.meta.url))
+    return existsSync(shim) ? shim : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function resolveBridgeSocketPath(sessionsDir: string, id: SessionId): string | undefined {
+  if (process.env.DSH_PI_TOOL_BRIDGE !== '1') return undefined
+  const shim = resolveBridgeShimPath()
+  return shim === undefined ? undefined : join(sessionsDir, `${id}.bridge.sock`)
+}
+
+/**
+ * Idempotently register the packaged shim as pi MCP server "dsh-tools" in
+ * the global ~/.pi/agent/mcp.json, so pi's builtin MCP client spawns it for
+ * every pi process. Called at plugin construction while the bridge gate is
+ * on; the shim stays inert wherever DSH_TOOL_BRIDGE_SOCKET is absent (e.g.
+ * pi run directly by the user). Unrelated user servers are preserved.
+ */
+export function ensureMcpBridgeConfig(shimPath: string): void {
+  try {
+    const configPath = join(homedir(), '.pi', 'agent', 'mcp.json')
+    let parsed: Record<string, unknown> = {}
+    if (existsSync(configPath)) {
+      parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    }
+    if (typeof parsed !== 'object' || parsed === null) parsed = {}
+    const servers = (typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null ? { ...parsed.mcpServers as Record<string, unknown> } : {})
+    const existing = servers['dsh-tools']
+    const desired = { command: process.execPath, args: [shimPath] }
+    if (typeof existing === 'object' && existing !== null) {
+      const prior = existing as Record<string, unknown>
+      if (prior.command === desired.command && Array.isArray(prior.args) && prior.args[0] === shimPath && prior.enabled !== false) return
+    }
+    servers['dsh-tools'] = desired
+    parsed.mcpServers = servers
+    mkdirSync(dirname(configPath), { recursive: true })
+    writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8')
+    console.error('[pi-agent] tool bridge: registered dsh-tools MCP server in ~/.pi/agent/mcp.json')
+  } catch (error) {
+    console.error(`[pi-agent] tool bridge: mcp.json update failed (${errorChain(error)})`)
   }
 }
 
@@ -204,6 +280,19 @@ export class PiAgent implements Agent {
   private stopSelectionWatch: (() => void) | undefined
   /** Whether pi's slash commands have been mirrored into the agent scope. */
   private commandsLoaded = false
+  /** Open pi compaction awaiting its end frame — mirrors the dsh compaction lock. */
+  private pendingCompaction: {
+    compactionId: CompactionId
+    turn: number | null
+    startSeq: SessionSeq
+    shadowedRange: { start: SessionSeq; end: SessionSeq }
+    shadowedSeqs: SessionSeq[]
+  } | undefined
+  /** The /compact invocation awaiting its compaction_start, for correlation. */
+  private armedCompactionCommandId: CommandId | undefined
+  /** Host side of the dsh tool bridge for this agent's pi process. */
+  private bridge: ToolBridgeServer | undefined
+  private bridgeSocketPath: string | undefined
   /** Live streaming attempt handed to the native chat UI. */
   private stream: { attemptId: AssistantStreamFrame["attemptId"]; revision: number; index: number; openBlocks: Set<number>; ended: boolean } | undefined
   private streamRevision = 0
@@ -214,9 +303,9 @@ export class PiAgent implements Agent {
     public readonly id: SessionId,
     public readonly options: PiAgentOptions,
     public readonly session: Session,
-    private readonly commands: CommandRuntime,
     private readonly approval: ApprovalService,
     private readonly toolSchemas: () => ToolSchema[],
+    private readonly tools: ToolRuntime,
   ) {
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
@@ -224,6 +313,27 @@ export class PiAgent implements Agent {
     this.inbox = new PiInbox(this.ctx.sessionProjections, session, this.dispatch)
     const lastTurn = this.loopCtx.sessionProjections.stateOf(session, 'turnBoundary')?.lastTurn ?? 0
     this.phase = { kind: 'idle', lastTurn }
+    // Tool bridge (MCP route): the host listens first; pi's builtin MCP
+    // client spawns the shim configured in ~/.pi/agent/mcp.json, and the shim
+    // finds this socket via the inherited DSH_TOOL_BRIDGE_SOCKET env.
+    this.bridgeSocketPath = resolveBridgeSocketPath(options.sessionsDir ?? '.', id)
+    if (this.bridgeSocketPath !== undefined) {
+      this.bridge = new ToolBridgeServer({
+        agent: this,
+        tools,
+        agents: this.loopCtx.agents,
+        socketPath: this.bridgeSocketPath,
+        logger: {
+          info: message => loopCtx.logger.info(`pi[${id}] bridge: ${message}`),
+          warn: message => loopCtx.logger.warn(`pi[${id}] bridge: ${message}`),
+        },
+      })
+      void this.bridge.start().catch((error: unknown) => {
+        this.loopCtx.logger.warn(`pi[${id}] tool bridge failed to start: ${errorChain(error)}`)
+        this.bridge = undefined
+        this.bridgeSocketPath = undefined
+      })
+    }
     this.driver = new PiDriver({
       ...(options.piCliEntry === undefined ? {} : { piCliEntry: options.piCliEntry }),
       sessionsDir: options.sessionsDir ?? '.',
@@ -232,6 +342,7 @@ export class PiAgent implements Agent {
       ...(options.provider === undefined ? {} : { provider: options.provider }),
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
+      ...(this.bridgeSocketPath === undefined ? {} : { bridgeSocketPath: this.bridgeSocketPath }),
       onFrame: frame => this.translateFrame(frame),
       onInteractiveExtUi: async request => {
         // pi extension confirm → native approval card. Only valid inside an
@@ -263,6 +374,12 @@ export class PiAgent implements Agent {
       if (typeof selection.provider !== 'string' || typeof selection.model !== 'string') return
       void this.driver.setModel({ provider: selection.provider, model: selection.model, ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }) })
     })
+    // Mirror pi's slash commands at construction so the composer lists them
+    // as soon as the session opens, not after the first prompt. The fetch
+    // spawns the pi process early; the first turn's start() reuses it.
+    void this.loadPiCommands().catch((error: unknown) => {
+      loopCtx.logger.warn(`pi[${id}] command registry unavailable: ${errorChain(error)}`)
+    })
   }
 
   get status(): AgentStatus {
@@ -273,6 +390,23 @@ export class PiAgent implements Agent {
   async disposeDriver(): Promise<void> {
     this.stopSelectionWatch?.()
     this.stopSelectionWatch = undefined
+    // Release a pi compaction the dying child will never close, so the dsh
+    // compaction lock never hangs on this log.
+    const pending = this.pendingCompaction
+    if (pending !== undefined) {
+      this.pendingCompaction = undefined
+      this.session.append('compaction/end', {
+        compactionId: pending.compactionId,
+        turn: pending.turn,
+        error: 'pi process stopped before the compaction settled',
+      })
+    }
+    // Tear down the tool bridge before the child dies: aborts in-flight
+    // bridged calls and unlinks the socket.
+    if (this.bridge !== undefined) {
+      await this.bridge.stop().catch(() => {})
+      this.bridge = undefined
+    }
     await this.driver.stop()
     // The cache is disposable by definition: the dsh log holds everything.
     await rm(join(this.options.sessionsDir ?? '.', `${this.id}.jsonl`), { force: true }).catch(() => {})
@@ -446,20 +580,31 @@ export class PiAgent implements Agent {
         this.callSeqs.clear()
         this.session.append('step/start', { turn, step: 1 })
         this.seedSystemHead(turn)
-        for (const message of claimed) {
-          this.session.append('user/message', message, { surfaceOp: 'append' })
+        // Native-loop parity: the pre-step waterfall is where host machinery
+        // attaches per-turn state before the first request — most notably the
+        // subagent driver's durable child descriptor. Without emitting it, a
+        // pi-kernel child session never gets its `subagent/descriptor` and its
+        // history load fails "descriptor is corrupt".
+        const decision = await this.dispatch.waterfall(
+          'agent/pre-step', { messages: claimed, turn, step: 1, signal },
+          (): Promise<PreStepDecision> => Promise.resolve<PreStepDecision>({ kind: 'enter', messages: claimed }),
+        )
+        signal.throwIfAborted()
+        if (decision.kind === 'reject') {
+          reason = { kind: 'completed' }
+        } else {
+          for (const message of decision.messages) {
+            this.session.append('user/message', message, { surfaceOp: 'append' })
+          }
+          const text = decision.messages.map(userMessageText).filter(part => part !== '').join('\n\n')
+          await this.refreshCache()
+          await this.driver.start()
+          this.appendRequestAnchor()
+          const outcome = await this.driver.prompt(text)
+          reason = outcome.kind === 'aborted'
+            ? { kind: 'aborted', reason: abortedCancelCause(signal) ?? { kind: 'user' } }
+            : foldTurnEnd(outcome)
         }
-        const text = claimed.map(userMessageText).filter(part => part !== '').join('\n\n')
-        await this.refreshCache()
-        await this.driver.start()
-        this.appendRequestAnchor()
-        void this.loadPiCommands().catch((error: unknown) => {
-          this.loopCtx.logger.warn(`pi[${this.id}] command registry unavailable: ${errorChain(error)}`)
-        })
-        const outcome = await this.driver.prompt(text)
-        reason = outcome.kind === 'aborted'
-          ? { kind: 'aborted', reason: abortedCancelCause(signal) ?? { kind: 'user' } }
-          : foldTurnEnd(outcome)
       }
     } catch (error: unknown) {
       const cause = abortedCancelCause(signal)
@@ -489,9 +634,19 @@ export class PiAgent implements Agent {
 
   /**
    * pi frame → dsh session events. Runs synchronously in the transport's line
-   * reader, so append order always matches pi's event order.
+   * reader, so append order always matches pi's event order. Compaction
+   * frames are handled before the running-turn gate: a manual /compact runs
+   * while this agent is idle.
    */
   private translateFrame(frame: { type: string; [key: string]: unknown }): void {
+    if (frame.type === 'compaction_start') {
+      this.translateCompactionStart()
+      return
+    }
+    if (frame.type === 'compaction_end') {
+      this.translateCompactionEnd(frame)
+      return
+    }
     const turn = this.phase.kind === 'running' ? this.phase.turn : undefined
     if (turn === undefined) return
     switch (frame.type) {
@@ -618,6 +773,13 @@ export class PiAgent implements Agent {
       }
       case 'tool_execution_start': {
         const callId = String(frame.toolCallId ?? '') as ToolCallId
+        // Nested sub-dispatches (callId `parent/1`, pi's codemode wrapper
+        // fans MCP tool calls out this way) are unrepresentable in the v4
+        // log: a nested tool/call requires an ADVERTISED composite
+        // lifecycle, which pi frames never carry — recording one corrupts
+        // the session. Skip both halves of the pair; the parent's own
+        // result already carries the nested output for the model and UI.
+        if (callId.includes('/')) return
         const event = this.session.append('tool/call', {
           turn,
           step: this.runStep,
@@ -630,6 +792,7 @@ export class PiAgent implements Agent {
       }
       case 'tool_execution_end': {
         const callId = String(frame.toolCallId ?? '') as ToolCallId
+        if (callId.includes('/')) return // skipped at start; keep the pair balanced
         const isError = frame.isError === true
         const message = createToolResultMessage({
           callId,
@@ -652,10 +815,142 @@ export class PiAgent implements Agent {
   }
 
   /**
-   * Mirror pi's slash commands as agent-scoped dsh commands. Scoped same-name
-   * registration shadows the global dsh command for this session. A command
-   * entered while idle opens its own turn (pi consumes slash lines before the
-   * model); while running it goes in as steering input.
+   * pi `compaction_start` → the dsh compaction lock (`compaction/start`).
+   * The shadowed span is chosen on the dsh side — every surface node before
+   * the last user message (a protected system head never enters the span),
+   * so the recent turn stays verbatim, mirroring pi's retained tail — because
+   * pi's own `firstKeptEntryId` has no live mapping back to dsh surface seqs.
+   * A manual /compact runs at idle and records a standalone bracket
+   * (`turn: null`); pi's overflow auto-compaction runs mid-turn and records
+   * the open turn as the owner.
+   */
+  private translateCompactionStart(): void {
+    if (this.pendingCompaction !== undefined) return
+    const span = this.compactionSpan()
+    if (span === undefined) return
+    const compactionId = CompactionId(randomUUID())
+    const turn = this.phase.kind === 'running' ? this.phase.turn : null
+    const sourceCommandId = this.armedCompactionCommandId
+    this.armedCompactionCommandId = undefined
+    const startEvent = this.session.append('compaction/start', {
+      compactionId,
+      turn,
+      ...(sourceCommandId === undefined ? {} : { sourceCommandId }),
+    })
+    this.pendingCompaction = {
+      compactionId,
+      turn,
+      startSeq: startEvent.seq,
+      shadowedRange: span.shadowedRange,
+      shadowedSeqs: span.shadowedSeqs,
+    }
+  }
+
+  /**
+   * The surface span pi's compaction covers in dsh terms, or undefined when
+   * there is nothing before the last user message to condense.
+   */
+  private compactionSpan(): { shadowedRange: { start: SessionSeq; end: SessionSeq }; shadowedSeqs: SessionSeq[] } | undefined {
+    const nodes = this.session.surface.nodes
+    if (nodes.length === 0) return undefined
+    // Surface nodes are current log seqs, so eventAt always resolves.
+    // Existing Session history read; migration deferred (mirrors compaction-basic).
+    const head = nodes[0]
+    const firstIdx = head !== undefined && this.session.eventAt(head)?.type === 'system/message' ? 1 : 0
+    let lastUserIdx = -1
+    for (let index = nodes.length - 1; index >= firstIdx; index -= 1) {
+      const seq = nodes[index]
+      if (seq !== undefined && this.session.eventAt(seq)?.type === 'user/message') {
+        lastUserIdx = index
+        break
+      }
+    }
+    if (lastUserIdx <= firstIdx) return undefined
+    const shadowedSeqs = nodes.slice(firstIdx, lastUserIdx)
+    return {
+      shadowedRange: {
+        start: shadowedSeqs[0] as SessionSeq,
+        end: shadowedSeqs[shadowedSeqs.length - 1] as SessionSeq,
+      },
+      shadowedSeqs: [...shadowedSeqs],
+    }
+  }
+
+  /**
+   * pi `compaction_end` → close the dsh bracket: `compaction/summary` + the
+   * replacement checkpoint user message (surface replace of the recorded
+   * span) + `compaction/end`. A failed or aborted attempt records only the
+   * end with its error so the lock always releases.
+   */
+  private translateCompactionEnd(frame: { type: string; [key: string]: unknown }): void {
+    const pending = this.pendingCompaction
+    if (pending === undefined) return
+    this.pendingCompaction = undefined
+    const lifecycle = { compactionId: pending.compactionId, turn: pending.turn }
+    const fail = (error: string): void => {
+      this.session.append('compaction/end', { ...lifecycle, error })
+    }
+    const result = frame.result as { summary?: unknown; usage?: unknown } | undefined
+    const summary = typeof result?.summary === 'string' && result.summary !== '' ? result.summary : undefined
+    if (frame.aborted === true || summary === undefined) {
+      fail(typeof frame.errorMessage === 'string' && frame.errorMessage !== ''
+        ? frame.errorMessage
+        : 'pi compaction produced no summary')
+      return
+    }
+    // The recorded span must still be the same live, contiguous surface range.
+    const nodes = this.session.surface.nodes
+    const startIdx = nodes.indexOf(pending.shadowedRange.start)
+    const stillIntact = startIdx !== -1
+      && startIdx + pending.shadowedSeqs.length <= nodes.length
+      && pending.shadowedSeqs.every((seq, offset) => nodes[startIdx + offset] === seq)
+      && nodes[startIdx + pending.shadowedSeqs.length - 1] === pending.shadowedRange.end
+    if (!stillIntact) {
+      fail('the compacted surface span changed during pi compaction')
+      return
+    }
+    const meter = this.loopCtx.get('tokenMeter') as TokenMeter | undefined
+    if (meter === undefined) {
+      fail('token meter unavailable; the pi compaction was not recorded')
+      return
+    }
+    const shadowedTokenCount = meter.measure(this.session).nodes
+      .filter(node => pending.shadowedSeqs.includes(node.seq))
+      .reduce((total, node) => total + node.heuristicTokens, 0)
+    const route = this.driver.currentRoute
+    const usage = result === undefined ? undefined : translateUsage(result.usage)
+    const summaryEvent = this.session.append('compaction/summary', {
+      compactionId: pending.compactionId,
+      summary: [{ type: 'text', text: summary }],
+      shadowedRange: pending.shadowedRange,
+      shadowedSeqs: [...pending.shadowedSeqs],
+      shadowedTokenCount,
+      provider: route.provider ?? this.options.provider ?? 'pi',
+      model: route.model ?? this.options.model ?? 'default',
+      ...(usage === undefined ? {} : { usage }),
+    })
+    this.session.append('user/message', createUserMessage({
+      content: [
+        { type: 'text', text: `${CHECKPOINT_PREAMBLE}\n\n<compacted-summary>` },
+        { type: 'text', text: summary },
+        { type: 'text', text: '</compacted-summary>' },
+      ],
+      source: compactCheckpointSource(pending.compactionId),
+    }), {
+      surfaceOp: { op: 'replace', startSeq: pending.shadowedRange.start, endSeq: pending.shadowedRange.end },
+      sourceEventSeqs: [pending.startSeq, summaryEvent.seq, ...pending.shadowedSeqs],
+    })
+    this.session.append('compaction/end', lifecycle)
+  }
+
+  /**
+   * Mirror pi's slash commands into THIS agent's scope (registered through
+   * this.ctx, the agent scope — never the plugin's root context, which would
+   * land them in the global layer visible to every session). Scoped same-name
+   * registration shadows the global dsh command for this session only, and
+   * the registrations die with the scope (session close / kernel switch). A
+   * command entered while idle opens its own turn (pi consumes slash lines
+   * before the model); while running it goes in as steering input.
    */
   private async loadPiCommands(): Promise<void> {
     if (this.commandsLoaded) return
@@ -664,7 +959,7 @@ export class PiAgent implements Agent {
     for (const command of commands) {
       if (!/^[a-z][a-z0-9_-]*$/.test(command.name)) continue
       try {
-        this.commands.register({
+        this.ctx.commands.register({
           name: command.name,
           description: command.description ?? `(pi ${command.source} command)`,
           handler: (invocation: CommandInvocation): CommandResult => {
@@ -686,11 +981,15 @@ export class PiAgent implements Agent {
     }
     // Shadow dsh's /compact: the stock command drives ctx.compaction over
     // the LLM runtime, which the pi kernel does not use (the catalog adapter's
-    // stream() fails by design). Route compaction to pi instead.
-    this.commands.register({
+    // stream() fails by design). Route compaction to pi instead. Carrying the
+    // stock definitionId lets the client render the builtin face (icon +
+    // localized label/description) for this scoped shadow too.
+    this.ctx.commands.register({
+      definitionId: CommandDefinitionId('@deepseek-ai/dsh-command-compact'),
       name: 'compact',
       description: 'Compact the conversation context (pi kernel)',
-      handler: async (): Promise<CommandResult> => {
+      handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
+        this.armedCompactionCommandId = invocation.commandId
         const started = await this.driver.compact()
         return started
           ? { kind: 'success', text: 'pi compaction requested' }
