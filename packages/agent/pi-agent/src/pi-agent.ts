@@ -93,15 +93,21 @@ function abortedCancelCause(signal: AbortSignal): AgentCancelCause | undefined {
 
 /**
  * The per-agent bridge socket path under the pi data dir, or undefined when
- * the bridge is disabled. DEFAULT OFF (env DSH_PI_TOOL_BRIDGE=1 enables):
- * kept behind the gate until the ambient pi startup hang windows are
- * understood — they broke every pi launch regardless of the bridge.
+ * the bridge is disabled. DEFAULT ON (env DSH_PI_TOOL_BRIDGE=0 opts out):
+ * the ambient pi startup hang windows that once motivated the gate were
+ * proven environment-level and bridge-independent (a never-responding shim
+ * does not block pi's builtin MCP client), and the log-corruption bugs the
+ * bridge exposed are fixed at the translator.
  *
  * MCP route (2026-10-05, replaces the in-process extension): pi's builtin
  * MCP client spawns the packaged shim (see ensureMcpBridgeConfig) and the
  * shim finds this socket via the inherited DSH_TOOL_BRIDGE_SOCKET env —
  * pi's stdio transport inherits the parent environment.
  */
+/** Whether the tool bridge is armed: on by default; `DSH_PI_TOOL_BRIDGE=0` opts out. */
+export function toolBridgeEnabled(): boolean {
+  return process.env.DSH_PI_TOOL_BRIDGE !== '0'
+}
 /** The packaged MCP shim file, or undefined when missing (dev runs from src). */
 export function resolveBridgeShimPath(): string | undefined {
   try {
@@ -113,7 +119,7 @@ export function resolveBridgeShimPath(): string | undefined {
 }
 
 export function resolveBridgeSocketPath(sessionsDir: string, id: SessionId): string | undefined {
-  if (process.env.DSH_PI_TOOL_BRIDGE !== '1') return undefined
+  if (!toolBridgeEnabled()) return undefined
   const shim = resolveBridgeShimPath()
   return shim === undefined ? undefined : join(sessionsDir, `${id}.bridge.sock`)
 }

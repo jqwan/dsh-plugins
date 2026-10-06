@@ -328,8 +328,8 @@ packages/agent/pi-agent/
 ```
 
 依赖：`@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-session`、`@deepseek-ai/dsh-llm`、
-`@deepseek-ai/dsh-agent-loop`（**仅导入投影定义**）、`@deepseek-ai/dsh-tools`（类型）、
-`@earendil-works/pi-coding-agent`（peer，运行时定位 cli.js）。版本精确锁 0.2.0-rc.2。
+`@deepseek-ai/dsh-agent-loop`（**仅导入投影定义**）、`@deepseek-ai/dsh-tools`（类型）。
+pi 不再是依赖（见 15.3）。版本精确锁 0.2.0-rc.2。
 
 插件 config：`{ dataDir?, piCliEntry?, defaultProvider?, defaultModel?, approve?: boolean }`。
 
@@ -489,8 +489,9 @@ pi 模型 → pi 内置 MCP 客户端（官方维护）→ MCP shim（stdio，�
   （`{command: node, args: [shim]}`），保留用户其他服务器。
 - **socket 协议与 ToolBridgeServer 完全不变**（list/execute/cancel 帧、per-PiAgent socket、
   disposeDriver 清算）。
-- **门控**：`DSH_PI_TOOL_BRIDGE=1`（默认关）——gate 同时控制 ①插件启动时写 mcp.json 配置
-  ②driver 向 pi 进程注入 socket env。gate 关 = 无配置无注入 = 桥完全不存在。
+- **门控**：默认开，`DSH_PI_TOOL_BRIDGE=0` 可关（2026-10-06 翻转；原默认关是挂死窗口
+  时代的保守决定，窗口已证实为环境级且与桥无因果）——gate 同时控制 ①插件启动时写
+  mcp.json 配置 ②driver 向 pi 进程注入 socket env。gate 关 = 无配置无注入 = 桥完全不存在。
 - **证据**：shim 协议 smoke 全绿（initialize/list/call/isError 映射/取消中继）；真 pi 1.0.2
   e2e 全绿（内置 MCP 客户端 spawn shim → 模型调用 mcp__dsh_tools__dsh_echo → 宿主以正确
   agent 归因执行 → 结果回填 → agent_end）。
@@ -521,6 +522,15 @@ pi 模型 → pi 内置 MCP 客户端（官方维护）→ MCP shim（stdio，�
 跑完后无输出（挂点在 runRpcMode 内部 await）；对 inspector 信号/CDP pause 也无响应。
 怀疑环境级（代理/文件锁/系统态），无法复现定位。桥默认关闭的决定维持：挂死影响所有启动
 路径，与桥无因果（无扩展也挂）；窗口机制查明后再评估默认开启。
+
+**15.3 pi 收敛为全局唯一安装（2026-10-06）**：用户决策"机器上只有一份 pi、跟随全局升级"。
+`resolvePiCliEntry` 解析顺序改为 **显式 piCliEntry → 运行中 node 的 npm -g 安装
+（`<prefix>/lib/node_modules/...`，nvm 下随 node 版本切换自动跟随）→ 插件依赖（兜底，
+兼容他人环境）**；插件 package.json 移除 `@earendil-works/pi-coding-agent` 依赖，
+`piCatalog` 的 SDK 读取从同一 cliEntry 派生（spawn 的 CLI 与进程内 SDK 天然同版）。
+`resolvePiCliEntry`/`piCatalog` 从包入口导出作诊断面。全局升级后无版本闸门——大版本
+跳跃时先跑一次真实会话（RPC get_state + 一轮 prompt→agent_end）再重启 dsh。已验证：
+全局 1.0.3 解析/SDK/RPC 握手全绿。
 
 
 目标：让 pi 内核用上 dsh 注册表的**全部**工具（subagent/goal/bash/web/…含未来插件工具），

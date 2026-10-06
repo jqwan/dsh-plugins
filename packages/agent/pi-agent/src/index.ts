@@ -45,11 +45,12 @@ import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import { readProfilePatches, reconcileProfilePatches } from '@deepseek-ai/dsh-app-boot'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
-import { PiAgent, ensureMcpBridgeConfig, resolveBridgeShimPath, type PiAgentOptions } from './pi-agent.ts'
+import { PiAgent, ensureMcpBridgeConfig, resolveBridgeShimPath, toolBridgeEnabled, type PiAgentOptions } from './pi-agent.ts'
 import { exportPiSession } from './exporter.ts'
 
 export { exportPiSession }
 export { ToolBridgeServer } from './bridge.ts'
+export { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
 import { PiCatalogAdapter } from './llm-adapter.ts'
 import { piCatalog, resolvePiCliEntry, type PiCatalog } from './catalog.ts'
 import { inboxProjectionDefinition } from './inbox.ts'
@@ -201,12 +202,11 @@ export class PiAgentLoop extends Service implements AgentFactory {
       agents: config.agents ?? [],
     }
     this.runtime = { ctx }
-    // Tool bridge gate (DSH_PI_TOOL_BRIDGE=1, default off until the ambient
-    // pi startup hang windows are understood): while on, register the MCP
-    // shim in ~/.pi/agent/mcp.json so pi's builtin MCP client spawns it; the
-    // per-agent env injection (DSH_TOOL_BRIDGE_SOCKET) below is what actually
-    // arms each session's bridge.
-    if (process.env.DSH_PI_TOOL_BRIDGE === '1') {
+    // Tool bridge gate (default on; DSH_PI_TOOL_BRIDGE=0 opts out): register
+    // the MCP shim in ~/.pi/agent/mcp.json so pi's builtin MCP client spawns
+    // it; the per-agent env injection (DSH_TOOL_BRIDGE_SOCKET) below is what
+    // actually arms each session's bridge.
+    if (toolBridgeEnabled()) {
       const shim = resolveBridgeShimPath()
       if (shim !== undefined) ensureMcpBridgeConfig(shim)
     }
