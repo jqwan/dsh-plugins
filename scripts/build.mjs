@@ -6,20 +6,9 @@ import { spawn } from 'node:child_process'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packages = {
-  'authorization-web': {
-    directory: 'packages/credentials/authorization-web',
-    source: 'src/index.ts',
-    invariant: 'src/invariant.ts',
-  },
-  'client-ui-authorization': {
-    directory: 'packages/client/ui-authorization',
-    source: 'src/index.ts',
-    invariant: 'src/invariant.ts',
-  },
   'pi-agent': {
     directory: 'packages/agent/pi-agent',
     source: 'src/index.ts',
-    invariant: 'src/invariant.ts',
     // 工具桥的 MCP shim 是纯 js，随包分发到 lib/bridge/（由 pi 的内置 MCP
     // 客户端按 mcp.json 配置 spawn，不参与打包）
     copyToLib: ['bridge/dsh-mcp-shim.mjs'],
@@ -39,16 +28,6 @@ const packages = {
       '@deepseek-ai/dsh-session-projection',
       '@deepseek-ai/dsh-util-values',
     ],
-  },
-  'client-ui-workbench': {
-    directory: 'packages/client/ui-workbench',
-    source: 'src/index.ts',
-    invariant: 'src/invariant.ts',
-    client: {
-      id: '@deepseek-ai/dsh-client-ui-workbench',
-      source: 'src/client/index.ts',
-      cssPrefix: 'dshWorkbench',
-    },
   },
 }
 
@@ -97,11 +76,6 @@ async function emitDeclarations(name, config) {
   const directory = resolve(root, config.directory)
   await rm(join(directory, 'lib/types'), { recursive: true, force: true })
   await run('pnpm', ['exec', 'tsc', '-p', 'tsconfig.json', '--pretty', 'false'], directory, { NODE_OPTIONS: '--max-old-space-size=12288' })
-  if (name === 'authorization-web') {
-    for (const file of ['typert.host.js', 'typert.host.d.ts', 'typert.remote-client.js', 'typert.remote-client.d.ts']) {
-      await cp(join(directory, 'generated', file), join(directory, 'lib', file))
-    }
-  }
 }
 
 async function buildHost(config) {
@@ -116,9 +90,6 @@ async function buildHost(config) {
     'node:crypto',
     'zod',
     '@deepseek-ai/cordis',
-    '@deepseek-ai/dsh-authorization',
-    '@deepseek-ai/dsh-credentials',
-    '@deepseek-ai/dsh-invariants',
     '@deepseek-ai/dsh-typert-protocol',
     ...(config.externals ?? []),
   ]
@@ -133,21 +104,10 @@ async function buildHost(config) {
     sourcemap: false,
     legalComments: 'none',
   })
-  await build({
-    entryPoints: [join(directory, config.invariant)],
-    outfile: join(directory, 'lib/invariant.js'),
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    target: 'es2022',
-    external,
-    sourcemap: false,
-    legalComments: 'none',
-  })
-  for (const extra of config.extraHostEntries ?? []) {
+  if (config.invariant !== undefined) {
     await build({
-      entryPoints: [join(directory, extra.source)],
-      outfile: join(directory, extra.outfile),
+      entryPoints: [join(directory, config.invariant)],
+      outfile: join(directory, 'lib/invariant.js'),
       bundle: true,
       format: 'esm',
       platform: 'node',
@@ -157,10 +117,10 @@ async function buildHost(config) {
       legalComments: 'none',
     })
   }
-  if (config.directory.includes('authorization-web')) {
+  for (const extra of config.extraHostEntries ?? []) {
     await build({
-      entryPoints: [join(directory, 'src/types.ts')],
-      outfile: join(directory, 'lib/types/types.js'),
+      entryPoints: [join(directory, extra.source)],
+      outfile: join(directory, extra.outfile),
       bundle: true,
       format: 'esm',
       platform: 'node',
