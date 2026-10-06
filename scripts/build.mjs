@@ -16,12 +16,6 @@ const packages = {
     source: 'src/index.ts',
     invariant: 'src/invariant.ts',
   },
-  'workbench-web': {
-    directory: 'packages/task/workbench-web',
-    source: 'src/index.ts',
-    invariant: 'src/invariant.ts',
-    externals: ['express', 'ws', 'node-pty'],
-  },
   'pi-agent': {
     directory: 'packages/agent/pi-agent',
     source: 'src/index.ts',
@@ -162,9 +156,6 @@ async function buildHost(config) {
       sourcemap: false,
       legalComments: 'none',
     })
-  }
-  if (config.directory === 'packages/task/workbench-web') {
-    await cp(join(directory, 'src/pi/pi-telemetry-extension.js'), join(directory, 'lib/pi-telemetry-extension.js'))
   }
   if (config.directory.includes('authorization-web')) {
     await build({
