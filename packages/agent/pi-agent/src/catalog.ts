@@ -11,7 +11,7 @@
  * @module @deepseek-ai/dsh-pi-agent/catalog
  */
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findPackageJSON } from 'node:module'
@@ -35,9 +35,26 @@ export interface PiCatalog {
   current: { provider: string; model: string; reasoningEffort?: string }
 }
 
-/** Resolve pi's cli.js from the plugin's own dependency, or an explicit path. */
+/**
+ * Resolve pi's cli.js: explicit path, then the running node's npm -g install
+ * (the machine's single, user-managed pi), then the plugin dependency as a
+ * portability fallback.
+ *
+ * The SDK reads in {@link piCatalog} derive from this same entry, so the
+ * spawned CLI and the in-process SDK are always the same copy.
+ */
 export function resolvePiCliEntry(explicit?: string): string | undefined {
   if (explicit !== undefined && explicit !== '') return explicit
+  // npm -g installs under the running node's prefix (nvm: ../lib/node_modules
+  // next to bin/node). Deriving from process.execPath keeps following the
+  // global pi across node version switches — whichever prefix has it installed.
+  const prefix = dirname(dirname(process.execPath))
+  for (const candidate of [
+    join(prefix, 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'),
+    join(prefix, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js'),
+  ]) {
+    if (existsSync(candidate)) return candidate
+  }
   try {
     // import.meta.resolve lands on the package main (dist/index.js); the RPC
     // entry is the sibling cli.js.

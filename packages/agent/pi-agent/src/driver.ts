@@ -217,7 +217,11 @@ export class PiDriver {
   private async ensureProcess(): Promise<PiRpcProcess> {
     if (this.process !== undefined && !this.process.isExited) return this.process
     const cliEntry = resolvePiCliEntry(this.options.piCliEntry)
-    if (cliEntry === undefined) throw new Error('pi not found: install @earendil-works/pi-coding-agent or set piCliEntry')
+    if (cliEntry === undefined) {
+      throw new Error(
+        'pi not found: install @earendil-works/pi-coding-agent globally (npm i -g) or set the piCliEntry config',
+      )
+    }
     // dsh's default model route (e.g. deepseek-official) is not a pi route:
     // only forward provider/model that pi's own catalog recognizes, else let
     // pi fall back to its ~/.pi default. The catalog-only LLM adapter (P3)
