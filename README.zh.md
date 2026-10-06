@@ -6,10 +6,7 @@
 
 当前包含：
 
-- `@deepseek-ai/dsh-authorization-web`：Host 端授权桥接插件。
-- `@deepseek-ai/dsh-client-ui-authorization`：Models 页面 Provider 登录按钮和授权对话框。
-- `@deepseek-ai/dsh-workbench-web`：π 工作台（任务、便签、pi TUI 会话与 dsh 会话），挂载在 `/workbench` 前缀下，详见 `docs/workbench-plugin.md`。
-- `@deepseek-ai/dsh-client-ui-workbench`：工作台与 dsh web 的原生融合——以更低 priority 接管 dsh 侧边栏（π/dsh 会话切换的任务/会话树），并在中心区域叠加可切换的工作台界面（pi 终端、任务/便签/会话看板、统计、回收站）；dsh 会话保持原生聊天界面。
+- `@deepseek-ai/dsh-pi-agent`：以 [pi](https://github.com/earendil-works/pi-coding-agent) 作为 dsh 的 agent 内核。插件解析本机的全局 pi 安装，以 RPC 模式 spawn 子进程，并把 pi 的事件流翻译成原生 dsh 会话事件——UI、工具呈现、历史与变更可视化全部保持 dsh 原生。可选工具桥（默认开启，`DSH_PI_TOOL_BRIDGE=0` 关闭）经 pi 内置 MCP 客户端把 dsh 内核工具（subagent、goal、bash 等）暴露给 pi。设计与演进记录见 `docs/pi-agent-plugin-plan.md`。
 
 ## 前置条件
 
@@ -17,8 +14,7 @@
 - Node.js 22.19 或更高版本。
 - pnpm 11。
 - Git。
-
-公司和家里的 DSH 应使用兼容的同一版本系列。插件依赖 DSH 提供的 Cordis、credentials、authorization、Typert 和 Web Client 服务。
+- 全局安装 pi：`npm i -g @earendil-works/pi-coding-agent`（插件跟随当前 node 的全局前缀；可用插件配置 `piCliEntry` 覆盖）。
 
 ## 从源码安装
 
@@ -32,21 +28,21 @@ pnpm run build
 pnpm run install:profile -- --profile web
 ```
 
+安装前先停掉运行中的 `dsh web`——live patch reload 观察期间重装插件可能导致其崩溃。
+
+`pnpm run install:profile` 把构建好的插件装入指定 profile（绝对路径，任何 `DSH_BIN` 包装方式都可用），不会改动 DSH 安装本身或官方 Web profile bundle。
+
 最后启动 Web profile：
 
 ```sh
 dsh --profile web
 ```
 
-进入 Models 页面后，支持授权流程的 Provider 卡片会显示登录入口。
-
 如果使用其他 profile 名称，替换命令中的 `web`：
 
 ```sh
 pnpm run install:profile -- --profile company-web
 ```
-
-该 profile 必须具备 Web 能力；headless profile 无法显示 Client UI。
 
 ## 更新插件
 
@@ -63,17 +59,18 @@ pnpm run install:profile -- --profile web
 
 ## 扩展其他插件
 
-新增插件放在 `packages/<group>/<name>/`，并提供自己的 `package.json`、源码入口和 `cordis.patch.yml`（如果插件通过 DSH bundle 安装）。同时在 `scripts/build.mjs` 中加入该插件的构建入口。
+新增插件放在 `packages/<group>/<name>/`，并提供自己的 `package.json`、源码入口和 `cordis.patch.yml`（如果插件通过 DSH bundle 安装）。同时在 `scripts/build.mjs` 中加入该插件的构建入口。运行时服务标识一律用 peerDependencies 锁定到提供它们的 DSH 版本，不要把 Cordis 或 DSH 服务再打一份进包里。
 
-修改浏览器代码后必须重新执行 `pnpm run build`。如果修改 Host Remote 方法，还必须刷新 `packages/credentials/authorization-web/generated/` 中的 Typert 生成物：先构建匹配版本的 DSH checkout，再执行 `node scripts/update-generated.mjs /path/to/deepseek-harness`。这些文件是浏览器使用的 wire contract。
+改动后需要 `pnpm run build` 再 `install:profile`。
 
 ## 本地检查
 
 ```sh
+pnpm run build
 pnpm run check
 ```
 
-该命令会生成类型声明、构建 Host 入口、准备 Typert 文件并生成 DSH Web 所需的 `lib/client.js` 浏览器闭包。
+`scripts/smoke-pi-chat.mjs` 对真实 pi RPC 会话做冒烟（加 `--model` 跑一轮良性模型调用；`PI_SMOKE_PROVIDER` / `PI_SMOKE_MODEL` / `PI_SMOKE_CLI` 选择路由或二进制）。
 
 ## 版本固定
 
@@ -87,7 +84,3 @@ pnpm run install:profile -- --profile web
 ```
 
 这个仓库是公共仓库，不要提交 API key、Cookie、公司凭据或其他敏感信息。
-
-Pi 聊天首屏支持选择任务，首次发送时才创建会话；原生轨迹和回合统计面板显示已记录的消息、工具参数定义、用量与事件耗时；新的 pi 调用会补录测量数据，不改变模型上下文。能力范围见 [工作台说明](docs/workbench-plugin.md)。
-
-任务、便签、会话、回收站和统计已合并到工作台顶部标签；定时设置支持按服务端时区预览下次运行并校验。

@@ -1,7 +1,7 @@
 # pi-agent 内核插件实现方案
 
 > 2026-10-03 定稿。基于 dsh 0.2.0-rc.2（commit 639ed01）与 pi 0.84.4。
-> 前置调研：[dsh 扩展点清单](./dsh-extension-points.md)、[workbench 插件说明](./workbench-plugin.md)。
+> 前置调研：[dsh 扩展点清单](./dsh-extension-points.md)。
 
 ## 1. 背景与目标
 
@@ -19,7 +19,7 @@ pi RPC 执行器（chat-executor.js）、模型目录映射（model-catalog.js�
 
 **存储分工（2026-10-04 最终版，方案二）**：dsh 会话日志 = 唯一事实源；pi 会话文件 = 工作缓存
 （每次 pi 内核启动从日志无条件重建、dispose 删除，exporter 负责生成）；pi 模型/认证/设置 = `~/.pi`。
-内核可经 /kernel 命令在 pi 与原生之间切换，会话跨内核连续。详见 pi-only-persistence-assessment.md 第 9 节。
+内核可经 /kernel 命令在 pi 与原生之间切换，会话跨内核连续（pi-only 持久化评估未采纳，方案演进见本文 15 节）。
 
 ---
 

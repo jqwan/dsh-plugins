@@ -6,12 +6,7 @@ This repository contains personal DSH plugins that can be maintained in one plac
 
 The repository currently provides:
 
-- `@deepseek-ai/dsh-authorization-web`: the Host authorization bridge.
-- `@deepseek-ai/dsh-client-ui-authorization`: the Web Models-page sign-in UI.
-- `@deepseek-ai/dsh-workbench-web`: the π workbench (tasks, notes, pi TUI sessions, and dsh sessions) served under the `/workbench` prefix. See `docs/workbench-plugin.md`.
-- `@deepseek-ai/dsh-client-ui-workbench`: the native workbench fusion for the dsh web UI — it replaces dsh's sidebar with the workbench session tree (π/dsh toggle) and overlays dsh's center area with switchable workbench surfaces (pi terminal, task/note/session boards, stats, recycle bin); dsh sessions keep the native chat UI.
-
-The packages are kept in one source repository, but each package retains its own DSH bundle manifest. The installer builds the packages and adds them to a selected DSH profile in Host-then-Client order.
+- `@deepseek-ai/dsh-pi-agent`: runs [pi](https://github.com/earendil-works/pi-coding-agent) as the dsh agent kernel. The plugin resolves the machine's global pi install, spawns it in RPC mode, and translates its event stream into native dsh session events — UI, tools presentation, history, and change visualization stay native. An optional tool bridge (on by default; `DSH_PI_TOOL_BRIDGE=0` opts out) exposes dsh's kernel tools (subagent, goal, bash, …) to pi through pi's built-in MCP client. Design and history: `docs/pi-agent-plugin-plan.md`.
 
 ## Requirements
 
@@ -19,8 +14,7 @@ The packages are kept in one source repository, but each package retains its own
 - Node.js 22.19 or newer.
 - pnpm 11.
 - Git.
-
-The DSH installation must provide the authorization, credentials, Typert, Web, and Client UI services expected by these packages. Use the same DSH release line on both computers.
+- A global pi install: `npm i -g @earendil-works/pi-coding-agent` (the plugin follows whatever the running node's global prefix holds; set the plugin's `piCliEntry` config to override).
 
 ## Install from source
 
@@ -36,7 +30,7 @@ pnpm run install:profile -- --profile web
 
 Stop any running `dsh web` instance first — reinstalling plugins while the live patch reload watches the profile can crash it.
 
-`pnpm run install:profile` removes the previous local entries from the selected profile and installs the freshly built packages (absolute paths, so any `DSH_BIN` wrapper works). It does not modify the DSH installation or the shipped Web profile bundle.
+`pnpm run install:profile` installs the freshly built package into the selected profile (absolute paths, so any `DSH_BIN` wrapper works). It does not modify the DSH installation or the shipped Web profile bundle.
 
 Start the profile after installation:
 
@@ -44,15 +38,11 @@ Start the profile after installation:
 dsh --profile web
 ```
 
-Open the Models page. Provider cards with an authorization flow show the sign-in action supplied by these plugins.
-
 Use another profile name by replacing `web`:
 
 ```sh
 pnpm run install:profile -- --profile company-web
 ```
-
-The profile must already be a Web-capable profile. A headless profile cannot render the Client UI package.
 
 ## Update on another computer
 
@@ -71,7 +61,7 @@ Restart the DSH process after updating a profile. The profile keeps the package 
 
 Put each new plugin under `packages/<group>/<name>/`. Give it a `package.json`, a `cordis.patch.yml` when it is installed as a DSH bundle, a source entry, and a package-local build entry in `scripts/build.mjs`. Keep runtime service identities as peer dependencies of the DSH version that provides them; do not bundle a second copy of Cordis or DSH services.
 
-Changes to browser code require `pnpm run build` before `install:profile`. Changes to Host Remote methods also require refreshed Typert artifacts under `packages/credentials/authorization-web/generated/`; after building the matching DSH checkout, refresh them with `node scripts/update-generated.mjs /path/to/deepseek-harness`. Those files are the wire contract consumed by the browser.
+Changes require `pnpm run build` before `install:profile`.
 
 ## Local checks
 
@@ -80,7 +70,7 @@ pnpm run build
 pnpm run check
 ```
 
-The build runs TypeScript declaration generation, Host bundling, Typert artifact installation, and the DSH browser closure build. The browser artifact is emitted as `lib/client.js` with the `window.__ModuleLoader__.load(...)` wrapper required by the DSH Web loader.
+`scripts/smoke-pi-chat.mjs` exercises a real pi RPC session (add `--model` for one benign model turn; `PI_SMOKE_PROVIDER` / `PI_SMOKE_MODEL` / `PI_SMOKE_CLI` select the route or binary).
 
 ## Repository releases
 
@@ -94,7 +84,3 @@ pnpm run install:profile -- --profile web
 ```
 
 Pinning a tag or commit makes home and work installations reproducible. Public GitHub access exposes the source and build scripts; never put credentials in this repository.
-
-Pi chat drafts select a task and create a session only on first submission. The native trajectory and turn-stat panels show recorded messages, tool schemas, usage, and event timing; new pi calls record measurements without changing model context. See [workbench behavior](docs/workbench-plugin.md).
-
-The five management views share one Workbench entry with top tabs. Task scheduling includes host-timezone next-run previews and validation.
